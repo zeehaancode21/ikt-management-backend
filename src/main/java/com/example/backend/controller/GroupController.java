@@ -6,7 +6,9 @@ import com.example.backend.service.FcmService;
 import com.example.backend.entity.GroupMessage;
 import com.example.backend.repository.AttachmentRepository;
 import com.example.backend.repository.GroupMessageRepository;
+import com.example.backend.repository.GroupReadStatusRepository;
 import com.example.backend.repository.GroupRepository;
+import com.example.backend.entity.GroupReadStatus;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,6 +39,7 @@ public class GroupController {
 
     private final GroupRepository groupRepo;
     private final GroupMessageRepository groupMsgRepo;
+    private final GroupReadStatusRepository groupReadStatusRepo;
     private final SimpMessagingTemplate messagingTemplate;
     private final ObjectMapper objectMapper;
     private final AttachmentRepository attachmentRepository;
@@ -49,9 +52,62 @@ public class GroupController {
 
     // ── GET /groups → list all groups for current user ───────────────────────
     @GetMapping
+    @Transactional(readOnly = true)
     public ResponseEntity<List<Group>> listGroups() {
-        List<Group> groups = groupRepo.findGroupsForUser(currentUser());
+        String me = currentUser();
+        List<Group> groups = groupRepo.findGroupsForUser(me);
+
+        for (Group group : groups) {
+            long lastReadId = groupReadStatusRepo.findByGroupIdAndUsername(group.getId(), me)
+                    .map(GroupReadStatus::getLastReadMessageId)
+                    .orElse(0L);
+            long unread = groupMsgRepo.countByGroup_IdAndIdGreaterThanAndSenderUsernameNot(group.getId(), lastReadId, me);
+            group.setUnreadCount(unread);
+        }
+
         return ResponseEntity.ok(groups);
+    }
+
+    // ── POST /groups/{id}/read → mark a group's messages as read for me ──────
+    // Exposed separately too, in case the client wants to mark read without
+    // re-fetching the whole message list (e.g. after receiving a live
+    // WebSocket message while the chat is already open).
+    @PostMapping("/{id}/read")
+    @Transactional
+    public ResponseEntity<?> markGroupRead(@PathVariable Long id) {
+        String me = currentUser();
+
+        return groupRepo.findById(id).map(group -> {
+            if (!group.hasMember(me) && !group.getCreatedBy().equals(me)) {
+                return ResponseEntity.status(403).body(Map.of("error", "Not a member of this group."));
+            }
+
+            long lastReadMessageId = markGroupReadInternal(id, me);
+            return ResponseEntity.ok(Map.of("groupId", id, "lastReadMessageId", lastReadMessageId));
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    // ── Helper: upsert the read marker for (group, user) to the newest message id ─
+    private long markGroupReadInternal(Long groupId, String username) {
+        Long maxId = groupMsgRepo.findMaxIdByGroupId(groupId);
+        long latest = maxId != null ? maxId : 0L;
+
+        GroupReadStatus status = groupReadStatusRepo.findByGroupIdAndUsername(groupId, username)
+                .orElseGet(() -> {
+                    GroupReadStatus s = new GroupReadStatus();
+                    s.setGroupId(groupId);
+                    s.setUsername(username);
+                    return s;
+                });
+
+        // Never move the marker backwards.
+        if (latest > status.getLastReadMessageId()) {
+            status.setLastReadMessageId(latest);
+        }
+        status.setLastReadAt(java.time.LocalDateTime.now());
+        groupReadStatusRepo.save(status);
+
+        return status.getLastReadMessageId();
     }
 
     // ── POST /groups → create group ──────────────────────────────────────────
@@ -127,11 +183,14 @@ public class GroupController {
     }
 
     // ── GET /groups/{id}/messages → fetch message history ────────────────────
+    // Also marks the group as read for the requester, mirroring how
+    // GET /messages/conversation/{user} marks a DM thread read on open.
     @GetMapping("/{id}/messages")
-    @Transactional(readOnly = true)
+    @Transactional
     public ResponseEntity<?> getMessages(@PathVariable Long id) {
+        String me = currentUser();
         return groupRepo.findById(id).map(group -> {
-            if (!group.hasMember(currentUser()) && !group.getCreatedBy().equals(currentUser())) {
+            if (!group.hasMember(me) && !group.getCreatedBy().equals(me)) {
                 return ResponseEntity.status(403).body(Map.of("error", "Not a member of this group."));
             }
             List<GroupMessage> msgs = groupMsgRepo.findByGroup_IdOrderBySentAtAsc(id);
@@ -139,6 +198,9 @@ public class GroupController {
             msgs.forEach(m -> {
                 try { m.postLoad(); } catch (Exception ignored) {}
             });
+
+            markGroupReadInternal(id, me);
+
             return ResponseEntity.ok(msgs);
         }).orElse(ResponseEntity.notFound().build());
     }

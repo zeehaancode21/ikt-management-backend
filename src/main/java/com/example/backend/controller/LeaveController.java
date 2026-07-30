@@ -292,9 +292,17 @@ public class LeaveController {
         Map<String, Double> daysUsedByEmployee = repo.aggregateApprovedDaysForYear(year).stream()
                 .collect(Collectors.toMap(EmployeeDaysAggregate::getEmployeeName, EmployeeDaysAggregate::getTotalDays));
 
-        Map<String, LocalDate> joinDateByEmployee = profileRepo.findJoinDatesByUsernames(employeeNames).stream()
-                .collect(Collectors.toMap(EmployeeJoinDateProjection::getUsername,
-                        EmployeeJoinDateProjection::getDateOfJoining));
+        // NOTE: built with a plain loop instead of Collectors.toMap(...) —
+        // getDateOfJoining() is nullable (an employee profile may not have
+        // it set yet), and Collectors.toMap throws a NullPointerException
+        // the moment it encounters a null value. That NPE was bubbling up
+        // as a generic 400 Bad Request from GlobalExceptionHandler,
+        // breaking this endpoint entirely for any employee list that
+        // included a profile without a dateOfJoining.
+        Map<String, LocalDate> joinDateByEmployee = new java.util.HashMap<>();
+        for (EmployeeJoinDateProjection p : profileRepo.findJoinDatesByUsernames(employeeNames)) {
+            joinDateByEmployee.put(p.getUsername(), p.getDateOfJoining());
+        }
 
         return employeeNames.stream()
                 .sorted(String.CASE_INSENSITIVE_ORDER)

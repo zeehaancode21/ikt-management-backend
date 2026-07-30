@@ -28,4 +28,14 @@ public interface GroupMessageRepository extends JpaRepository<GroupMessage, Long
 
     /** Batched lookup of old group messages for the retention cleanup job (see MessageRepository for why entities, not bulk DELETE). */
     List<GroupMessage> findBySentAtBefore(java.time.LocalDateTime cutoff, org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * Count messages in this group, newer than the given id, that weren't
+     * sent by the current user — i.e. the unread count for that user.
+     */
+    long countByGroup_IdAndIdGreaterThanAndSenderUsernameNot(Long groupId, Long id, String senderUsername);
+
+    /** Highest message id currently in the group, used when marking it as read. */
+    @Query("SELECT MAX(gm.id) FROM GroupMessage gm WHERE gm.group.id = :groupId")
+    Long findMaxIdByGroupId(@Param("groupId") Long groupId);
 }

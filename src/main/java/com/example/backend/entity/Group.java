@@ -39,6 +39,13 @@ public class Group {
     @Column(columnDefinition = "TEXT")
     private String members; // e.g. "alice,bob,charlie"
 
+    /**
+     * Number of messages the current requesting user hasn't read yet.
+     * Computed on demand in GroupController#listGroups, never persisted.
+     */
+    @Transient
+    private Long unreadCount = 0L;
+
     // ── Convenience helpers ──────────────────────────────────────────────────
 
     public List<String> getMemberList() {
