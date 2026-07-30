@@ -1,0 +1,7 @@
+firebase-service-account.json
+
+/target/
+.DS_Store
+**/.DS_Store
+application-local.properties
+.env
