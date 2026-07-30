@@ -1,1 +1,0 @@
-[2026-07-30T13:08:32.195288] Status: 201 | Topic: Highlight how cloud-based collaboration tools are transforming real-time steel detailing workflows. | Response: {"id":"urn:li:share:7488498246823243776"} | Content preview: Cloud-based collaboration tools are changing the game for steel detailers. Gone are the days of emai

@@ -5,3 +5,5 @@ firebase-service-account.json
 **/.DS_Store
 application-local.properties
 .env
+env.local.sh
+linkedin_post_log.txt
