@@ -33,6 +33,24 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
     @Query("SELECT COUNT(n) FROM Notification n WHERE n.targetUsername = :username AND n.read = false")
     long countUnreadForUser(@Param("username") String username);
 
+    /**
+     * Unread counts for a user, grouped by notification type. Each row is
+     * [type, count] — used to build per-module sidebar badges (Messages,
+     * Leave Portal, Permission Portal, etc.) without fetching full rows.
+     */
+    @Query("SELECT n.type, COUNT(n) FROM Notification n WHERE n.targetUsername = :username AND n.read = false GROUP BY n.type")
+    List<Object[]> countUnreadForUserGroupedByType(@Param("username") String username);
+
+    /**
+     * Marks every unread notification of the given types as read for a
+     * user — e.g. clearing the sidebar badge for a module once the user
+     * opens it, without touching notifications from other modules.
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE Notification n SET n.read = true WHERE n.targetUsername = :username AND n.type IN :types AND n.read = false")
+    int markReadForUserAndTypes(@Param("username") String username, @Param("types") List<String> types);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM Notification n WHERE n.targetUsername = :username")

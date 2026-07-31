@@ -1,5 +1,6 @@
 package com.example.backend.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,6 +10,7 @@ import org.springframework.http.*;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Base64;
 
 @Service
 public class LinkedInService {
@@ -31,9 +33,20 @@ public class LinkedInService {
     }
 
     /**
-     * Post content to LinkedIn with provided token
+     * Post content to LinkedIn with provided token (no image attachment).
+     * Kept for backward compatibility with any other callers.
      */
     public String postContent(String content, String topic, String providedToken) throws Exception {
+        return postContent(content, topic, providedToken, null);
+    }
+
+    /**
+     * Post content to LinkedIn with provided token, optionally attaching an
+     * image. {@code imageBase64} is expected as a base64 data URL
+     * (e.g. "data:image/png;base64,....") or a bare base64 string — both are
+     * handled. When null/blank, behaves exactly like a text-only post.
+     */
+    public String postContent(String content, String topic, String providedToken, String imageBase64) throws Exception {
         // Use provided token or fallback to default
         String token = (providedToken != null && !providedToken.isEmpty()) 
             ? providedToken 
@@ -50,6 +63,15 @@ public class LinkedInService {
             throw new Exception("LinkedIn person URN is not configured.");
         }
 
+        // If the caller attached an image, upload it to LinkedIn first so we
+        // have an asset URN to reference from the post body below. Any
+        // failure here is surfaced clearly rather than silently dropping
+        // the image and posting text-only.
+        String assetUrn = null;
+        if (imageBase64 != null && !imageBase64.isBlank()) {
+            assetUrn = uploadImageAsset(token, personUrn, imageBase64);
+        }
+
         // Escape content for JSON
         String escapedContent = escapeJson(content);
 
@@ -63,7 +85,22 @@ public class LinkedInService {
         ObjectNode shareCommentary = objectMapper.createObjectNode();
         shareCommentary.put("text", escapedContent);
         shareContent.set("shareCommentary", shareCommentary);
-        shareContent.put("shareMediaCategory", "NONE");
+
+        if (assetUrn != null) {
+            shareContent.put("shareMediaCategory", "IMAGE");
+            com.fasterxml.jackson.databind.node.ArrayNode mediaArray = objectMapper.createArrayNode();
+            ObjectNode mediaItem = objectMapper.createObjectNode();
+            mediaItem.put("status", "READY");
+            mediaItem.put("media", assetUrn);
+            ObjectNode mediaTitle = objectMapper.createObjectNode();
+            mediaTitle.put("text", topic != null && !topic.isBlank() ? topic : "Image");
+            mediaItem.set("title", mediaTitle);
+            mediaArray.add(mediaItem);
+            shareContent.set("media", mediaArray);
+        } else {
+            shareContent.put("shareMediaCategory", "NONE");
+        }
+
         specificContent.set("com.linkedin.ugc.ShareContent", shareContent);
         requestBody.set("specificContent", specificContent);
         
@@ -113,6 +150,104 @@ public class LinkedInService {
             }
             throw e;
         }
+    }
+
+    /**
+     * Uploads an image to LinkedIn's asset store and returns the resulting
+     * asset URN (e.g. "urn:li:digitalmediaAsset:xxxx") so it can be
+     * referenced from a UGC post. Implements LinkedIn's two-step
+     * register-then-upload flow:
+     *   1) POST /v2/assets?action=registerUpload  -> upload URL + asset URN
+     *   2) PUT the raw image bytes to that upload URL
+     */
+    private String uploadImageAsset(String token, String personUrn, String imageBase64) throws Exception {
+        // Strip a data-URL prefix like "data:image/png;base64," if present.
+        String rawBase64 = imageBase64;
+        int commaIdx = imageBase64.indexOf(',');
+        if (imageBase64.startsWith("data:") && commaIdx != -1) {
+            rawBase64 = imageBase64.substring(commaIdx + 1);
+        }
+
+        byte[] imageBytes;
+        try {
+            imageBytes = Base64.getDecoder().decode(rawBase64);
+        } catch (IllegalArgumentException e) {
+            throw new Exception("Attached image could not be decoded: " + e.getMessage());
+        }
+
+        // Step 1: register the upload
+        ObjectNode registerBody = objectMapper.createObjectNode();
+        ObjectNode registerUploadRequest = objectMapper.createObjectNode();
+        com.fasterxml.jackson.databind.node.ArrayNode recipes = objectMapper.createArrayNode();
+        recipes.add("urn:li:digitalmediaRecipe:feedshare-image");
+        registerUploadRequest.set("recipes", recipes);
+        registerUploadRequest.put("owner", personUrn);
+        com.fasterxml.jackson.databind.node.ArrayNode relationships = objectMapper.createArrayNode();
+        ObjectNode relationship = objectMapper.createObjectNode();
+        relationship.put("relationshipType", "OWNER");
+        relationship.put("identifier", "urn:li:userGeneratedContent");
+        relationships.add(relationship);
+        registerUploadRequest.set("serviceRelationships", relationships);
+        registerBody.set("registerUploadRequest", registerUploadRequest);
+
+        HttpHeaders registerHeaders = new HttpHeaders();
+        registerHeaders.setContentType(MediaType.APPLICATION_JSON);
+        registerHeaders.setBearerAuth(token);
+        registerHeaders.add("X-Restli-Protocol-Version", "2.0.0");
+
+        ResponseEntity<String> registerResponse;
+        try {
+            registerResponse = restTemplate.exchange(
+                "https://api.linkedin.com/v2/assets?action=registerUpload",
+                HttpMethod.POST,
+                new HttpEntity<>(registerBody.toString(), registerHeaders),
+                String.class
+            );
+        } catch (Exception e) {
+            throw new Exception("Failed to register image upload with LinkedIn: " + e.getMessage());
+        }
+
+        if (!registerResponse.getStatusCode().is2xxSuccessful() || registerResponse.getBody() == null) {
+            throw new Exception("LinkedIn image upload registration failed: "
+                + registerResponse.getStatusCode() + " - " + registerResponse.getBody());
+        }
+
+        JsonNode registerJson = objectMapper.readTree(registerResponse.getBody());
+        JsonNode value = registerJson.path("value");
+        String assetUrn = value.path("asset").asText(null);
+        String uploadUrl = value
+            .path("uploadMechanism")
+            .path("com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest")
+            .path("uploadUrl")
+            .asText(null);
+
+        if (assetUrn == null || uploadUrl == null) {
+            throw new Exception("LinkedIn did not return an upload URL/asset for the image.");
+        }
+
+        // Step 2: upload the actual image bytes to the returned upload URL
+        HttpHeaders uploadHeaders = new HttpHeaders();
+        uploadHeaders.setBearerAuth(token);
+        uploadHeaders.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        HttpEntity<byte[]> uploadEntity = new HttpEntity<>(imageBytes, uploadHeaders);
+
+        ResponseEntity<byte[]> uploadResponse;
+        try {
+            uploadResponse = restTemplate.exchange(
+                uploadUrl,
+                HttpMethod.PUT,
+                uploadEntity,
+                byte[].class
+            );
+        } catch (Exception e) {
+            throw new Exception("Failed to upload image bytes to LinkedIn: " + e.getMessage());
+        }
+
+        if (!uploadResponse.getStatusCode().is2xxSuccessful()) {
+            throw new Exception("LinkedIn image binary upload failed: " + uploadResponse.getStatusCode());
+        }
+
+        return assetUrn;
     }
 
     /**

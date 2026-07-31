@@ -79,13 +79,17 @@ public class SocialHubController {
     }
 
     @PostMapping("/post-to-linkedin")
-    public Map<String, Object> postToLinkedIn(@RequestBody Map<String, String> request) {
-        String content = request.get("content");
-        String topic = request.get("topic");
-        String linkedInToken = request.get("linkedInToken");
+    public Map<String, Object> postToLinkedIn(@RequestBody Map<String, Object> request) {
+        String content = (String) request.get("content");
+        String topic = (String) request.get("topic");
+        String linkedInToken = (String) request.get("linkedInToken");
+        // Optional attached image, sent by the frontend as a base64 data URL
+        // (e.g. "data:image/png;base64,...."). May be null/absent if the
+        // user didn't attach an image to this post.
+        String imageBase64 = (String) request.get("image");
         
         try {
-            String result = linkedInService.postContent(content, topic, linkedInToken);
+            String result = linkedInService.postContent(content, topic, linkedInToken, imageBase64);
             Map<String, Object> response = new HashMap<>();
             response.put("success", true);
             response.put("message", result);
