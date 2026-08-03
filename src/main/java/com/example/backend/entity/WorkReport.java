@@ -49,6 +49,7 @@ public class WorkReport {
         TRAINING,
         PRACTICING,
         MISCELLANEOUS,
-        ESTIMATION
+        ESTIMATION,
+        DESIGNING
     }
 }
