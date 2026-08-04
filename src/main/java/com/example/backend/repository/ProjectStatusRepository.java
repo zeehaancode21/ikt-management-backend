@@ -10,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.example.backend.dto.ClientYearOption;
 import com.example.backend.dto.ProjectYearOption;
 import com.example.backend.entity.ProjectStatus;
 
@@ -36,6 +37,18 @@ public interface ProjectStatusRepository extends JpaRepository<ProjectStatus, Lo
 
     @Query("SELECT DISTINCT p.client FROM ProjectStatus p")
     List<String> getAllClients();
+
+    /**
+     * All distinct (year, client) pairs across every project, newest year
+     * first and alphabetical within a year. Backs the year-grouped
+     * "Client" list (e.g. the Owner's Hours Dashboard's Manage Clients
+     * popup), reusing the same grouping shape as
+     * {@link #getProjectsByClientGroupedByYear(String)} so a client stays
+     * reachable under every year it has activity in.
+     */
+    @Query("SELECT DISTINCT p.year AS year, p.client AS clientName FROM ProjectStatus p " +
+            "ORDER BY p.year DESC, p.client ASC")
+    List<ClientYearOption> getAllClientsGroupedByYear();
 
     @Query("SELECT DISTINCT p.projectName FROM ProjectStatus p WHERE p.client = :client")
     List<String> getProjectsByClients(String client);

@@ -30,9 +30,6 @@ public class ProjectService {
 
     private static final Logger log = LoggerFactory.getLogger(ProjectService.class);
 
-    // @Autowired
-    // private ProjectRepository projectRepository;
-
     @Autowired
     private WorkReportRepository workReportRepository;
 
@@ -45,52 +42,6 @@ public class ProjectService {
     @Autowired
     private ProjectStatusRepository projectStatusRepository;
 
-    /**
-     * Updates a project's details. If the project name changes, every other
-     * table that references the old project name is updated in the same
-     * transaction, so nothing is left pointing at the stale name.
-     */
-    // @Transactional
-    // public Project update(Long id, Project updated) {
-    //     Project existing = projectRepository.findById(id)
-    //             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
-
-    //     String oldName = existing.getProjectName();
-    //     log.debug("oldName : {}", oldName);                          // <-- replaced System.out
-
-    //     String newName = updated.getProjectName();
-    //     log.debug("newName : {}", newName);                          // <-- replaced System.out
-
-    //     // Trim so a stray leading/trailing space typed in the edit form
-    //     // doesn't cause a false "changed" detection or a failed match below.
-    //     String oldNameTrimmed = oldName == null ? null : oldName.trim();
-    //     String newNameTrimmed = newName == null ? null : newName.trim();
-
-    //     log.debug("oldNameTrimmed : {}", oldNameTrimmed);            // <-- FIXED (was printing newName)
-    //     log.debug("newNameTrimmed : {}", newNameTrimmed);            // <-- replaced System.out
-
-    //     boolean nameChanged = oldNameTrimmed != null
-    //             && newNameTrimmed != null
-    //             && !oldNameTrimmed.equals(newNameTrimmed);
-    //     log.debug("nameChanged : {}", nameChanged);                 // <-- replaced System.out (duplicate removed)
-
-    //     existing.setProjectName(newNameTrimmed != null ? newNameTrimmed : newName);
-    //     existing.setClient(updated.getClient());
-    //     existing.setShipmentDate(updated.getShipmentDate());
-    //     existing.setEditor(updated.getEditor());
-    //     existing.setChecker(updated.getChecker());
-    //     existing.setModeler(updated.getModeler());
-    //     Project saved = projectRepository.save(existing);
-    //     log.debug("saved : {}", saved);                             // <-- replaced System.out
-
-    //             id, oldName, newName, nameChanged);
-
-    //     if (nameChanged) {
-    //         cascadeRename(oldNameTrimmed, newNameTrimmed);
-    //         log.debug("entered te method !!!");                    // <-- the exact line you asked about
-    //     }
-    //     return saved;
-    // }
 
     /**
      * Propagates a project rename to every table that stores the project

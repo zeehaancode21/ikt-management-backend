@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.example.backend.Exception.ResourceNotFoundException;
+import com.example.backend.dto.ClientYearOption;
 import com.example.backend.dto.ProjectYearOption;
 import com.example.backend.entity.ProjectStatus;
 import com.example.backend.repository.ProjectStatusRepository;
@@ -31,6 +32,11 @@ public class ProjectStatusServiceImpl implements ProjectStatusService {
     @Override
     public List<String> getAllClients(){
       return projectStatusRepository.getAllClients();
+    }
+
+    @Override
+    public List<ClientYearOption> getAllClientsGroupedByYear(){
+      return projectStatusRepository.getAllClientsGroupedByYear();
     }
 
     @Override

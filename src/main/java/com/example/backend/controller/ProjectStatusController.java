@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.example.backend.dto.ClientYearOption;
 import com.example.backend.dto.ProjectYearOption;
 import com.example.backend.entity.ApiResponse;
 import com.example.backend.entity.ProjectStatus;
@@ -90,6 +91,16 @@ public class ProjectStatusController {
         return ResponseEntity.ok(ApiResponse.success(projects));
     }
     
+    // GET all clients, grouped by year (year + client name pairs).
+    // Used by the Owner's Hours Dashboard "Manage Clients" popup so every
+    // client stays browsable in one list, organized by year, the same way
+    // the Work Report "Projects" dropdown organizes projects by year.
+    @GetMapping("/grouped-by-year")
+    public ResponseEntity<ApiResponse<List<ClientYearOption>>> getAllClientsGroupedByYear() {
+        List<ClientYearOption> clients = projectStatusService.getAllClientsGroupedByYear();
+        return ResponseEntity.ok(ApiResponse.success(clients));
+    }
+
     // GET all of a client's projects, grouped by year (year + project name pairs).
     // Used by the Work Report "Projects" dropdown so every project the client has
     // ever had stays browsable in one list, organized by year, instead of being
