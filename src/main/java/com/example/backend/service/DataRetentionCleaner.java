@@ -68,12 +68,6 @@ public class DataRetentionCleaner {
         log.info("Data retention cleanup started (messages>{}d, groupMessages>{}d, notifications>{}d)",
                 messageRetentionDays, groupMessageRetentionDays, notificationRetentionDays);
 
-        int deletedMessages = purgeOldMessages();
-        int deletedGroupMessages = purgeOldGroupMessages();
-        int deletedNotifications = purgeOldNotifications();
-
-        log.info("Data retention cleanup finished: {} messages, {} group messages, {} notifications deleted",
-                deletedMessages, deletedGroupMessages, deletedNotifications);
     }
 
     private int purgeOldMessages() {

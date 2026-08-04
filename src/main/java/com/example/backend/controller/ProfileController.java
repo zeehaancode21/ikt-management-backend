@@ -1,12 +1,16 @@
 package com.example.backend.controller;
 
 import com.example.backend.entity.EmployeeProfile;
+import com.example.backend.entity.User;
 import com.example.backend.repository.EmployeeProfileRepository;
 import com.example.backend.repository.UserRepository;
 import com.example.backend.service.LeavePolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
@@ -31,6 +35,8 @@ import java.util.Map;
 //     allowedHeaders = "*"
 // )
 public class ProfileController {
+
+    private static final Logger log = LoggerFactory.getLogger(ProfileController.class);
 
     @Autowired private EmployeeProfileRepository profileRepo;
     @Autowired private UserRepository userRepo;
@@ -112,11 +118,13 @@ public class ProfileController {
     // ---------- Write ----------
 
     @PutMapping("/me")
+    @Transactional
     public Map<String, String> updateOwnProfile(@RequestBody ProfileRequest req) {
         return saveProfile(currentUsername(), req);
     }
 
     @PutMapping("/{username}")
+    @Transactional
     public Map<String, String> updateProfileFor(@PathVariable String username, @RequestBody ProfileRequest req) {
         requireOwnerOrSelf(username);
         return saveProfile(username, req);
@@ -161,7 +169,52 @@ public class ProfileController {
         profile.setCurrentAddress(req.currentAddress());
         profile.setUpdatedBy(currentUsername());
         profileRepo.save(profile);
+
+        // Keep users.email in sync with employee_profiles.email.
+        // Root cause of the original bug: this method only ever wrote the
+        // email to EmployeeProfile — nothing in the /profile/me flow ever
+        // touched the users table, so users.email was left stale (or NULL
+        // for accounts created before email was collected at registration).
+        // Runs inside the same @Transactional request (see updateOwnProfile
+        // / updateProfileFor) so both tables commit or roll back together.
+        syncUserEmail(username, req.email());
+
         return Map.of("message", "Profile updated");
+    }
+
+    /**
+     * Mirrors the employee_profiles.email value into users.email so the two
+     * stay consistent without a manual SQL patch. Handles all three cases:
+     * users.email was NULL/empty, users.email already had a value that
+     * differs from the new one, and no-op when they already match.
+     */
+    private void syncUserEmail(String username, String newEmail) {
+        // Nothing to sync if the profile email itself is blank — don't
+        // overwrite a real users.email with an empty value from a partial
+        // profile update.
+        if (newEmail == null || newEmail.isBlank()) {
+            log.debug("Skipping users.email sync for '{}': profile email is empty", username);
+            return;
+        }
+
+        User user = userRepo.findByUsername(username).orElse(null);
+        if (user == null) {
+            // Should not normally happen (a profile implies a user account),
+            // but don't let a data inconsistency elsewhere blow up the
+            // profile save.
+            log.warn("Could not sync email for '{}': no matching users row found", username);
+            return;
+        }
+
+        String currentEmail = user.getEmail();
+        if (newEmail.equalsIgnoreCase(currentEmail)) {
+            return; // already in sync, nothing to do
+        }
+
+        boolean wasMissing = (currentEmail == null || currentEmail.isBlank());
+        user.setEmail(newEmail);
+        userRepo.save(user);
+
     }
 
     // ---------- Profile picture ----------
