@@ -256,12 +256,12 @@ public class ProjectStatusServiceImpl implements ProjectStatusService {
         String effectiveNewProjectName = newProjectName != null ? newProjectName.trim() : oldProjectName;
 
         // Project master table — has both client and project_name columns.
-        int projectRows = jdbcTemplate.update(
-                "UPDATE project SET project_name = ?, client = ? " +
-                        "WHERE TRIM(LOWER(project_name)) = TRIM(LOWER(?)) " +
-                        "AND (client IS NULL OR TRIM(LOWER(client)) = TRIM(LOWER(?)))",
-                effectiveNewProjectName, effectiveNewClient, oldProjectName, oldClient
-        );
+        // int projectRows = jdbcTemplate.update(
+        //         "UPDATE project SET project_name = ?, client = ? " +
+        //                 "WHERE TRIM(LOWER(project_name)) = TRIM(LOWER(?)) " +
+        //                 "AND (client IS NULL OR TRIM(LOWER(client)) = TRIM(LOWER(?)))",
+        //         effectiveNewProjectName, effectiveNewClient, oldProjectName, oldClient
+        // );
 
         // work_report — has both client and project columns.
         int workReportsUpdated = jdbcTemplate.update(
@@ -283,8 +283,8 @@ public class ProjectStatusServiceImpl implements ProjectStatusService {
                 effectiveNewProjectName, oldProjectName
         );
 
-        log.info(">>> Cascade complete for '{}' -> '{}': project={}, work_report={}, change_orders={}, documents={}",
-                oldProjectName, effectiveNewProjectName, projectRows, workReportsUpdated, changeOrdersUpdated, documentsUpdated);
+        // log.info(">>> Cascade complete for '{}' -> '{}': project={}, work_report={}, change_orders={}, documents={}",
+        //         oldProjectName, effectiveNewProjectName, projectRows, workReportsUpdated, changeOrdersUpdated, documentsUpdated);
 
         if (workReportsUpdated == 0) {
             log.warn(">>> WARNING: 0 rows matched in work_report for project='{}' client='{}'. " +
