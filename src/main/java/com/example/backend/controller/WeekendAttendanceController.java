@@ -64,18 +64,18 @@ public class WeekendAttendanceController {
         return requester.equals(employeeName) || isApprover(requester);
     }
 
-    // private static boolean isWeekend(LocalDate date) {
-    //     DayOfWeek dow = date.getDayOfWeek();
-    //     return dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY;
-    // }
-
-    private boolean isWeekend(LocalDate date) {
-        if (bypassWeekendCheck) {
-            return true;
-        }
+    private static boolean isWeekend(LocalDate date) {
         DayOfWeek dow = date.getDayOfWeek();
         return dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY;
     }
+
+    // private boolean isWeekend(LocalDate date) {
+    //     if (bypassWeekendCheck) {
+    //         return true;
+    //     }
+    //     DayOfWeek dow = date.getDayOfWeek();
+    //     return dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY;
+    // }
 
     private static double roundToTwoDecimals(double value) {
         return Math.round(value * 100.0) / 100.0;
