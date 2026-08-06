@@ -67,7 +67,10 @@ public class SecurityConfig {
                     "/actuator/health",
                     "/v3/api-docs/**",
                     "/swagger-ui/**",
-                    "/swagger-ui.html"
+                    "/swagger-ui.html",
+                    // Public by design: the AI image provider fetches user
+                    // reference images from this URL — see AiImageController.
+                    "/social-post/ai-image/reference-source/**"
                 ).permitAll()
                 // All other endpoints require authentication
                 .anyRequest().authenticated()
