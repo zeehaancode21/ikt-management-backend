@@ -2,8 +2,10 @@ package com.example.backend.controller;
 
 import com.example.backend.service.AiImageDraftStore;
 import com.example.backend.service.AiImageDraftStore.GeneratedImageOption;
-import com.example.backend.service.AiImageGenerationService;
 import com.example.backend.service.AiImageGenerationService.AiImageGenerationException;
+import com.example.backend.service.TemplateImageComposerService;
+import com.example.backend.service.TemplateImageComposerService.ImageCompositionException;
+import com.example.backend.service.TemplatedImageGenerationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,10 +29,13 @@ public class AiImageController {
     private static final Logger logger = LoggerFactory.getLogger(AiImageController.class);
 
     @Autowired
-    private AiImageGenerationService aiImageGenerationService;
+    private AiImageDraftStore aiImageDraftStore;
 
     @Autowired
-    private AiImageDraftStore aiImageDraftStore;
+    private TemplatedImageGenerationService templatedImageGenerationService;
+
+    @Autowired
+    private TemplateImageComposerService templateImageComposerService;
 
     @Value("${ai.image.count:1}")
     private int defaultCount;
@@ -116,10 +121,93 @@ public class AiImageController {
         }
     }
 
-    // ===== IMAGE GENERATION ENDPOINTS =====
+    // ===== UPLOADED IMAGE ENDPOINT =====
+    //
+    // An uploaded image gets the exact same company-template treatment as
+    // an AI-generated one: it is composited into the fixed IK Tangience
+    // template's content area so every final post — regardless of how the
+    // image was sourced — is branded consistently. This is not a mode the
+    // user opts into; it always happens for every uploaded image.
 
-    @PostMapping(value = "/generate", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> generateImage(@RequestBody AiImageRequest request) {
+    @PostMapping(value = "/compose-uploaded", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> composeUploadedImage(@RequestBody ComposeUploadedRequest request) {
+        try {
+            if (request.getImageBase64() == null || request.getImageBase64().trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "success", false,
+                    "message", "An image is required"
+                ));
+            }
+            byte[] imageBytes = decodeImageBase64(request.getImageBase64());
+            byte[] composed = templateImageComposerService.composeWithTemplate(imageBytes);
+            String dataUrl = "data:image/png;base64," + Base64.getEncoder().encodeToString(composed);
+
+            return ResponseEntity.ok(Map.of(
+                "success", true,
+                "image", dataUrl,
+                "message", "Image composed into the company template successfully"
+            ));
+
+        } catch (ImageCompositionException e) {
+            logger.warn("Compose-uploaded rejected: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of(
+                    "success", false,
+                    "message", e.getMessage()
+                ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "success", false,
+                "message", "Could not read the uploaded image: " + e.getMessage()
+            ));
+        } catch (Exception e) {
+            logger.error("Failed to compose uploaded image into template", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of(
+                    "success", false,
+                    "message", "Failed to apply the company template: " + e.getMessage()
+                ));
+        }
+    }
+
+    /** Strips a "data:image/...;base64," prefix if present and decodes the rest. */
+    private byte[] decodeImageBase64(String value) {
+        String raw = value;
+        int commaIdx = raw.indexOf(',');
+        if (raw.startsWith("data:") && commaIdx != -1) {
+            raw = raw.substring(commaIdx + 1);
+        }
+        return Base64.getDecoder().decode(raw);
+    }
+
+    // ===== TEMPLATED GENERATION ENDPOINTS =====
+    //
+    // Every AI-generated image goes through this flow: the user's prompt
+    // (sent to the AI exactly as typed, never modified) controls the
+    // content dropped into the fixed IK Tangience template's content
+    // area — the header, footer, logo, slogan and CONNECT NOW block always
+    // come from the template file untouched. See
+    // TemplatedImageGenerationService and TemplateImageComposerService for
+    // how that's enforced. Applying the template is always-on and is not a
+    // separate user-selectable mode.
+
+    /**
+     * Kept for backward compatibility with any existing frontend build
+     * that still polls this endpoint. The bundled company template
+     * (src/main/resources/public/template.png) is loaded once at startup
+     * and application startup fails if it can't be — so on any running
+     * instance this always reports true; there is no runtime "unavailable"
+     * state to gate the UI on anymore.
+     */
+    @GetMapping("/template-status")
+    public ResponseEntity<?> templateStatus() {
+        return ResponseEntity.ok(Map.of(
+            "available", templateImageComposerService.isTemplateAvailable()
+        ));
+    }
+
+    @PostMapping(value = "/generate-templated", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> generateTemplatedImage(@RequestBody AiImageRequest request) {
         try {
             long startTime = System.currentTimeMillis();
 
@@ -129,8 +217,6 @@ public class AiImageController {
                 logger.info("Generated new draft ID: {}", draftId);
             }
 
-            logger.info("Generating image(s) for draft: {} with prompt: {}", draftId, request.getPrompt());
-
             if (request.getPrompt() == null || request.getPrompt().trim().isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of(
                     "success", false,
@@ -138,22 +224,20 @@ public class AiImageController {
                 ));
             }
 
+            logger.info("Generating templated image(s) for draft: {} with prompt: {}", draftId, request.getPrompt());
+
             int count = request.getCount() != null && request.getCount() > 0 ? request.getCount() : defaultCount;
             final String finalDraftId = draftId;
 
             CompletableFuture<List<byte[]>> future = CompletableFuture.supplyAsync(() ->
-                aiImageGenerationService.generateImages(
-                    request.getPrompt(),
-                    request.getReferenceImages(),
-                    count
-                )
+                templatedImageGenerationService.generateTemplatedImages(request.getPrompt(), count)
             );
 
             List<byte[]> generatedImages;
             try {
                 generatedImages = future.get(timeoutMs, TimeUnit.MILLISECONDS);
             } catch (java.util.concurrent.TimeoutException e) {
-                logger.warn("Image generation timed out after {}ms", timeoutMs);
+                logger.warn("Templated image generation timed out after {}ms", timeoutMs);
                 future.cancel(true);
                 return ResponseEntity.status(HttpStatus.REQUEST_TIMEOUT)
                     .body(Map.of(
@@ -162,15 +246,15 @@ public class AiImageController {
                     ));
             } catch (java.util.concurrent.ExecutionException e) {
                 Throwable cause = e.getCause() != null ? e.getCause() : e;
-                if (cause instanceof AiImageGenerationException) {
-                    logger.warn("Image generation failed for draft {}: {}", finalDraftId, cause.getMessage());
+                if (cause instanceof AiImageGenerationException || cause instanceof ImageCompositionException) {
+                    logger.warn("Templated image generation failed for draft {}: {}", finalDraftId, cause.getMessage());
                     return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                         .body(Map.of(
                             "success", false,
                             "message", cause.getMessage()
                         ));
                 }
-                logger.error("Image generation failed", cause);
+                logger.error("Templated image generation failed", cause);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of(
                         "success", false,
@@ -178,9 +262,9 @@ public class AiImageController {
                     ));
             }
 
-           List<GeneratedImageOption> options = aiImageDraftStore.saveGenerated(finalDraftId, generatedImages, "image/jpeg");
+            List<GeneratedImageOption> options = aiImageDraftStore.saveGenerated(finalDraftId, generatedImages, "image/png");
             long duration = System.currentTimeMillis() - startTime;
-            logger.info("Generated {} image(s) in {}ms for draft {}", options.size(), duration, finalDraftId);
+            logger.info("Generated {} templated image(s) in {}ms for draft {}", options.size(), duration, finalDraftId);
 
             return ResponseEntity.ok(Map.of(
                 "success", true,
@@ -188,44 +272,31 @@ public class AiImageController {
                 "draftId", finalDraftId,
                 "count", options.size(),
                 "duration", duration,
-                "message", "Generated " + options.size() + " image option" + (options.size() == 1 ? "" : "s") + " successfully"
+                "message", "Generated " + options.size() + " templated image option" + (options.size() == 1 ? "" : "s") + " successfully"
             ));
 
+        } catch (ImageCompositionException e) {
+            logger.warn("Templated image generation rejected: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(Map.of(
+                    "success", false,
+                    "message", e.getMessage()
+                ));
         } catch (AiImageGenerationException e) {
-            logger.warn("AI image generation rejected: {}", e.getMessage());
+            logger.warn("Templated image generation rejected: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(Map.of(
                     "success", false,
                     "message", e.getMessage()
                 ));
         } catch (Exception e) {
-            logger.error("AI image generation failed", e);
+            logger.error("Templated image generation failed", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Map.of(
                     "success", false,
                     "message", "Failed to generate image: " + e.getMessage()
                 ));
         }
-    }
-
-    @PostMapping(value = "/generate", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-    public ResponseEntity<?> generateImageForm(
-            @RequestParam("prompt") String prompt,
-            @RequestParam(value = "draftId", required = false) String draftId,
-            @RequestParam(value = "referenceImages", required = false) String referenceImages,
-            @RequestParam(value = "count", required = false) Integer count) {
-
-        AiImageRequest request = new AiImageRequest();
-        request.setPrompt(prompt);
-        request.setDraftId(draftId);
-        request.setCount(count);
-
-        if (referenceImages != null && !referenceImages.isEmpty()) {
-            List<String> refs = Arrays.asList(referenceImages.split(","));
-            request.setReferenceImages(refs);
-        }
-
-        return generateImage(request);
     }
 
     // ===== SELECTION ENDPOINT =====
@@ -318,5 +389,12 @@ public class AiImageController {
 
         public Integer getCount() { return count; }
         public void setCount(Integer count) { this.count = count; }
+    }
+
+    public static class ComposeUploadedRequest {
+        private String imageBase64;
+
+        public String getImageBase64() { return imageBase64; }
+        public void setImageBase64(String imageBase64) { this.imageBase64 = imageBase64; }
     }
 }

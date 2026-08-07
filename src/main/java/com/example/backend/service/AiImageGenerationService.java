@@ -95,8 +95,24 @@ public class AiImageGenerationService {
      * No API key is required. Only one call is processed at a time
      * app-wide; a second concurrent call is rejected immediately instead
      * of being sent out, to avoid piling up requests.
+     *
+     * Uses the configured default output size (ai.image.width/height).
      */
     public List<byte[]> generateImages(String prompt, List<String> referenceImages, int count) {
+        return generateImages(prompt, referenceImages, count, width, height);
+    }
+
+    /**
+     * Same as {@link #generateImages(String, List, int)} but with an
+     * explicit output size for this call only, instead of the configured
+     * default. Added so callers that need a specific pixel size — e.g. the
+     * Media Hub template-composition flow, which requests an image sized
+     * to exactly fit inside a fixed template's content area — can reuse
+     * this same provider/rate-limiter/concurrency-guard logic without
+     * disturbing the default size used everywhere else.
+     */
+    public List<byte[]> generateImages(String prompt, List<String> referenceImages, int count,
+                                        int outputWidth, int outputHeight) {
         if (prompt == null || prompt.trim().isEmpty()) {
             throw new AiImageGenerationException("Prompt is required to generate an image");
         }
@@ -122,13 +138,14 @@ public class AiImageGenerationService {
                 }
             }
 
-            logger.info("Generating {} image(s) via Pollinations.ai model {} ({} reference image(s) supplied)",
-                requestedCount, refs.isEmpty() ? textToImageModel : imageGuidedModel, refs.size());
+            logger.info("Generating {} image(s) via Pollinations.ai model {} ({} reference image(s) supplied, {}x{})",
+                requestedCount, refs.isEmpty() ? textToImageModel : imageGuidedModel, refs.size(),
+                outputWidth, outputHeight);
 
             List<byte[]> images = new ArrayList<>();
             for (int i = 0; i < requestedCount; i++) {
                 waitForNextAllowedSlot();
-                images.add(fetchOneImage(prompt, referencePublicUrl));
+                images.add(fetchOneImage(prompt, referencePublicUrl, outputWidth, outputHeight));
             }
             return images;
         } finally {
@@ -152,7 +169,7 @@ public class AiImageGenerationService {
         nextAllowedRequestTime.set(System.currentTimeMillis() + MIN_INTERVAL_BETWEEN_REQUESTS_MS);
     }
 
-    private byte[] fetchOneImage(String prompt, String referencePublicUrl) {
+    private byte[] fetchOneImage(String prompt, String referencePublicUrl, int outputWidth, int outputHeight) {
         boolean guided = referencePublicUrl != null;
         // A different seed per image so requesting count > 1 doesn't return
         // near-identical images.
@@ -160,8 +177,8 @@ public class AiImageGenerationService {
 
         UriComponentsBuilder builder = UriComponentsBuilder
             .fromHttpUrl(apiUrl + "/" + encodePathSegment(prompt))
-            .queryParam("width", width)
-            .queryParam("height", height)
+            .queryParam("width", outputWidth)
+            .queryParam("height", outputHeight)
             .queryParam("seed", seed)
             .queryParam("model", guided ? imageGuidedModel : textToImageModel)
             .queryParam("nologo", "true")
