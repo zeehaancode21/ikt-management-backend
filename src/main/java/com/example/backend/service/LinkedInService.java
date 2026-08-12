@@ -72,10 +72,12 @@ public class LinkedInService {
             assetUrn = uploadImageAsset(token, personUrn, imageBase64);
         }
 
-        // Escape content for JSON
-        String escapedContent = escapeJson(content);
-
-        // Build request body
+        // NOTE: no manual JSON-escaping here. Jackson's ObjectNode already
+        // performs correct JSON string escaping when requestBody.toString()
+        // is called below. Manually escaping first (as this used to do)
+        // caused double-escaping: real line breaks became the literal text
+        // "\n" once Jackson escaped the already-escaped backslash again,
+        // and that literal "\n" is what ended up published on LinkedIn.
         ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("author", personUrn);
         requestBody.put("lifecycleState", "PUBLISHED");
@@ -83,7 +85,7 @@ public class LinkedInService {
         ObjectNode specificContent = objectMapper.createObjectNode();
         ObjectNode shareContent = objectMapper.createObjectNode();
         ObjectNode shareCommentary = objectMapper.createObjectNode();
-        shareCommentary.put("text", escapedContent);
+        shareCommentary.put("text", content);
         shareContent.set("shareCommentary", shareCommentary);
 
         if (assetUrn != null) {
@@ -277,18 +279,6 @@ public class LinkedInService {
         } catch (Exception e) {
             return false;
         }
-    }
-
-    /**
-     * Escape special characters for JSON
-     */
-    private String escapeJson(String text) {
-        if (text == null) return "";
-        return text.replace("\\", "\\\\")
-                   .replace("\"", "\\\"")
-                   .replace("\n", "\\n")
-                   .replace("\r", "")
-                   .replace("\t", "\\t");
     }
 
     /**

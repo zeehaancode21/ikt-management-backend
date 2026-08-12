@@ -17,6 +17,11 @@ import java.util.Set;
 @Service
 public class MistralService {
 
+    // Fixed company branding — always used verbatim, never asked for again,
+    // never left as a placeholder. See buildPrompt()/sanitizePost().
+    private static final String COMPANY_NAME = "IK Tangience";
+    private static final String COMPANY_TAGLINE = "We Speak Fluent Steel";
+
     @Value("${mistral.api.key}")
     private String apiKey;
 
@@ -71,7 +76,7 @@ public class MistralService {
             );
 
             if (response.getStatusCode() == HttpStatus.OK) {
-                return extractContentFromResponse(response.getBody());
+                return sanitizePost(extractContentFromResponse(response.getBody()));
             } else {
                 throw new Exception("Mistral API error: " + response.getStatusCode() + " - " + response.getBody());
             }
@@ -129,13 +134,23 @@ public class MistralService {
     }
 
     /**
-     * Build a detailed prompt based on topic and category
+     * Build a detailed prompt based on topic and category.
+     *
+     * This content goes straight to the review/publish flow, so the prompt
+     * is written as a direct-to-publish spec: the company name and tagline
+     * are fixed and injected as real text (never as placeholders the model
+     * has to fill in), and the model is explicitly told never to emit
+     * unresolved variables, bracketed instructions, or escaped line breaks.
+     * sanitizePost() below is a second line of defense in case the model
+     * doesn't fully comply.
      */
     private String buildPrompt(String topic, String categoryId) {
         String categoryContext = getCategoryContext(categoryId);
-        
+
         return String.format(
-            "You are a professional LinkedIn content creator specializing in structural steel detailing and construction.\n\n" +
+            "You are a professional LinkedIn content creator writing on behalf of the company " +
+            "\"%s\" (tagline: \"%s\") — a structural steel detailing company. This is the ONLY " +
+            "company this post is ever about.\n\n" +
             "CONTEXT: %s\n\n" +
             "TOPIC: %s\n\n" +
             "REQUIREMENTS:\n" +
@@ -143,14 +158,99 @@ public class MistralService {
             "- Professional yet conversational tone\n" +
             "- Include specific steel detailing industry insights\n" +
             "- Add 3-5 relevant hashtags at the end\n" +
-            "- No markdown or special formatting\n" +
+            "- No markdown or special formatting (no **bold**, no asterisks)\n" +
             "- Add value with actionable insights\n" +
             "- End with a question or call-to-action to encourage engagement\n" +
-            "- Make it sound authentic and personal\n\n" +
+            "- Make it sound authentic and personal\n" +
+            "- Separate paragraphs with an actual blank line (a real line break you type), " +
+            "never the two characters backslash-n, and never the characters /n\n\n" +
+            "HARD RULES (this text is sent directly to the user for review and posting, so it " +
+            "must be complete, final, publication-ready content — nothing left for a human to " +
+            "fill in):\n" +
+            "1. If you name the company at all, you MUST call it exactly \"%s\" — never invent, " +
+            "substitute, or make up any other company name (e.g. do not write things like " +
+            "\"SteelFrame Precision\", \"Precision Steel Co.\", or any other invented name).\n" +
+            "2. Never invent specific numbers you don't actually have (years in business, " +
+            "project counts, staff size, etc.) and never write a bracketed placeholder for one " +
+            "like [X], [X years], [insert number]. Instead phrase it without a number — say " +
+            "\"years of hands-on experience\" rather than \"[X] years of experience\".\n" +
+            "3. Never output any placeholder or template marker of any kind — no [Company Name], " +
+            "[your company], {{company_name}}, {tagline}, <insert>, $variable, [Insert CTA here], " +
+            "\"Add hashtags\", \"Example:\", or similar. Write the actual finished content instead.\n" +
+            "4. If some other detail (a date, a person's name, a link) isn't given to you and " +
+            "isn't essential to the post, leave it out entirely rather than inventing a " +
+            "placeholder or a fake value for it.\n\n" +
             "Write the post directly (no preamble, no meta-commentary):",
+            COMPANY_NAME,
+            COMPANY_TAGLINE,
             categoryContext,
-            topic
+            topic,
+            COMPANY_NAME
         );
+    }
+
+    /**
+     * Final safety net before content leaves the backend: even though the
+     * prompt instructs the model not to emit placeholders or escape
+     * sequences, models don't always fully comply. This normalizes escaped
+     * line breaks into real ones, swaps any lingering company-name/tagline
+     * placeholders for the real values, and strips obvious leftover
+     * template/instruction fragments so nothing unresolved reaches the
+     * frontend.
+     */
+    private String sanitizePost(String content) {
+        if (content == null) {
+            return content;
+        }
+
+        String result = content;
+
+        // Normalize escaped/literal line-break sequences into real newlines.
+        result = result.replace("\\r\\n", "\n");
+        result = result.replace("\\n", "\n");
+        result = result.replace("/n/n", "\n\n");
+        result = result.replace("/n", "\n");
+
+        // Resolve any lingering company-name / tagline placeholders.
+        result = result.replaceAll(
+            "(?i)\\[\\s*(your\\s+)?company(\\s+name)?\\s*\\]|\\{\\{\\s*company_?name\\s*\\}\\}|" +
+            "\\{\\s*company(\\s+name)?\\s*\\}|<\\s*company(\\s+name)?\\s*>|\\$company_?name",
+            COMPANY_NAME
+        );
+        result = result.replaceAll(
+            "(?i)\\[\\s*(your\\s+)?tagline\\s*\\]|\\{\\{\\s*tagline\\s*\\}\\}|" +
+            "\\{\\s*tagline\\s*\\}|<\\s*tagline\\s*>|\\$tagline",
+            COMPANY_TAGLINE
+        );
+
+        // Strip obvious leftover template instructions / unresolved
+        // variables (bracketed/braced fragments containing instruction-like
+        // words such as insert, add, replace, placeholder, enter, etc.).
+        result = result.replaceAll(
+            "(?i)[\\[{<]\\s*(insert|add|replace|enter|write|placeholder|your|example)[^\\]}>]*[\\]}>]",
+            ""
+        );
+
+        // Catch-all: the post shouldn't contain bracket/brace/angle-bracket
+        // wrapped text at all (e.g. leftover numeric placeholders like [X],
+        // [X years], [number]). Anything still wrapped like that at this
+        // point is a placeholder, not real content, so drop it.
+        result = result.replaceAll("\\[[^\\]]{0,60}\\]", "");
+        result = result.replaceAll("\\{[^}]{0,60}\\}", "");
+        result = result.replaceAll("<[^>]{0,60}>", "");
+
+        // Strip markdown bold/italic asterisks (post requires plain text).
+        result = result.replaceAll("\\*\\*([^*]+)\\*\\*", "$1");
+        result = result.replaceAll("(?<!\\*)\\*([^*]+)\\*(?!\\*)", "$1");
+
+        // Collapse any resulting excess blank lines/spaces left by stripping.
+        result = result.replaceAll("[ \\t]+\\n", "\n");
+        result = result.replaceAll("\\n{3,}", "\n\n");
+        result = result.replaceAll("[ \\t]{2,}", " ");
+        result = result.replaceAll(" +([,.!?])", "$1");
+        result = result.trim();
+
+        return result;
     }
 
     /**
