@@ -140,9 +140,12 @@ public class PermissionController {
         }
     }
 
-    private void notifyEmployeeOfDecision(PermissionRequest p, Status decision) {
+        private void notifyEmployeeOfDecision(PermissionRequest p, Status decision, String rejectionReason) {
         boolean approved = decision == Status.APPROVED;
         String content = "Your permission request on " + p.getDate() + " was " + (approved ? "approved" : "rejected") + ".";
+        if (!approved && rejectionReason != null && !rejectionReason.isBlank()) {
+            content += " Reason: " + rejectionReason;
+        }
         String title = approved ? "\u2705 Permission Approved" : "\u274C Permission Rejected";
 
         notifyPermissionEvent(p.getEmployeeName(), currentUsername(), content,
@@ -179,10 +182,21 @@ public class PermissionController {
             double fullDayThresholdHours
     ) {}
 
-    public record EmployeeQuotaSummary(
+        public record EmployeeQuotaSummary(
             String employeeName,
             QuotaResponse quota
     ) {}
+
+    // Optional body for approve/reject. `reason` is an optional owner comment
+    // and is only used when rejecting.
+    public record DecisionBody(String reason) {}
+
+    private static String cleanReason(DecisionBody body) {
+        if (body == null || body.reason() == null) return null;
+        String r = body.reason().trim();
+        if (r.isEmpty()) return null;
+        return r.length() > 500 ? r.substring(0, 500) : r;
+    }
 
     // ── Owner: pending queue ─────────────────────────────────────────────
     // Includes both brand-new PENDING requests and REAPPROVAL_PENDING (an
@@ -415,6 +429,7 @@ public class PermissionController {
             p.setPendingHours(newHours);
             p.setPendingPermissionType(body.permissionType() != null ? body.permissionType() : p.getPermissionType());
             p.setPendingReason(body.reason().trim());
+            p.setChangeRejectionReason(null);
             p.setStatus(Status.REAPPROVAL_PENDING);
 
             PermissionRequest saved = repo.save(p);
@@ -442,13 +457,10 @@ public class PermissionController {
         }).orElse(ResponseEntity.notFound().build());
     }
 
-    // ── Owner: approve/reject ─────────────────────────────────────────────
-    // Also handles REAPPROVAL_PENDING requests: approving copies the
-    // employee's proposed changes onto the real request (and it stays
-    // APPROVED); rejecting simply discards the proposed changes and leaves
-    // the original approved request exactly as it was.
-    @PutMapping("/{id}/{status}")
-    public ResponseEntity<?> updatePermissionRequest(@PathVariable Long id, @PathVariable Status status) {
+        @PutMapping("/{id}/{status}")
+    public ResponseEntity<?> updatePermissionRequest(@PathVariable Long id,
+                                                     @PathVariable Status status,
+                                                     @RequestBody(required = false) DecisionBody body) {
         String role = getUserRole(currentUsername());
         if (!List.of("OWNER", "ADMIN", "MANAGER").contains(role)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Only managers can approve or reject permission requests");
@@ -457,6 +469,8 @@ public class PermissionController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Status must be APPROVED or REJECTED.");
         }
 
+          final String rejectionReason = (status == Status.REJECTED) ? cleanReason(body) : null;
+        System.out.println("[PERMISSION-REJECT] id=" + id + " status=" + status + " body=" + body + " reason=" + rejectionReason);
         repo.findById(id).ifPresent(p -> {
             LocalDate originalDate = p.getDate();
             boolean wasReapproval = p.getStatus() == Status.REAPPROVAL_PENDING;
@@ -472,14 +486,17 @@ public class PermissionController {
                 }
                 // Whether the change is approved or rejected, the request
                 // itself goes back to a plain APPROVED state — rejecting a
-                // change request never touches the original approved request.
+                                // change request never touches the original approved request.
                 clearPendingFields(p);
                 p.setStatus(Status.APPROVED);
-            } else {
+                p.setChangeRejectionReason(status == Status.REJECTED ? rejectionReason : null);
+                       } else {
                 p.setStatus(status);
+                p.setRejectionReason(status == Status.REJECTED ? rejectionReason : null);
             }
             PermissionRequest saved = repo.save(p);
-            notifyEmployeeOfDecision(saved, status);
+            System.out.println("[PERMISSION-REJECT] saved id=" + saved.getId() + " status=" + saved.getStatus() + " rejectionReason=" + saved.getRejectionReason());
+            notifyEmployeeOfDecision(saved, status, rejectionReason);
 
             // Rejecting a plain request removes hours from the month's
             // active total; approving a reapproval can move hours to a new
