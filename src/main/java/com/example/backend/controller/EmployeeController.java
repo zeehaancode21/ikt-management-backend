@@ -1,6 +1,7 @@
 package com.example.backend.controller;
 
 import com.example.backend.dto.EmployeeResponseDto;
+import com.example.backend.dto.EmployeeRoleNameProjection;
 import com.example.backend.dto.UpdateEmployeeRequest;
 import com.example.backend.entity.EmployeeProfile;
 import com.example.backend.entity.User;
@@ -21,7 +22,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/employees")
@@ -60,24 +63,26 @@ public class EmployeeController {
         return repo.findUsernamesByRoles(List.of("USER", "LEAD"));
     }
 
-    /**
-     * Full user records (email, role, roleName, id) — restricted to OWNER/MANAGER.
-     * Previously this had no role check at all, so any authenticated user
-     * could see every user's email/role. If a "USER"-facing screen depends
-     * on this exact endpoint (rather than /employees/name), that screen
-     * will start getting 403s and needs to switch to /employees/name.
-     *
-     * `roleName` is the admin-set custom display title (e.g. "Senior
-     * Checker"), sourced from EmployeeProfile and joined in here so every
-     * consumer of this list (Admin Console employee table, etc.) gets it
-     * alongside the system role without a second round trip.
-     */
-    @GetMapping
+        @GetMapping
     // @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
     public List<EmployeeResponseDto> getAll() {
         List<User> users = repo.findAll();
+
+        List<String> usernames = users.stream().map(User::getUsername).toList();
+        Map<String, String> roleNamesByUsername = employeeProfileRepository
+                .findRoleNamesByUsernames(usernames)
+                .stream()
+                .filter(p -> p.getRoleName() != null && !p.getRoleName().isBlank())
+                .collect(Collectors.toMap(EmployeeRoleNameProjection::getUsername, EmployeeRoleNameProjection::getRoleName));
+
         return users.stream()
-                .map(this::toResponseDto)
+                .map(user -> new EmployeeResponseDto(
+                        user.getId(),
+                        user.getUsername(),
+                        user.getEmail(),
+                        user.getRole(),
+                        roleNamesByUsername.get(user.getUsername())
+                ))
                 .toList();
     }
 

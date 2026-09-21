@@ -28,7 +28,13 @@ public class LeaveRequest {
 
     private LocalDate fromDate;
     private LocalDate toDate;
+    @Column(length = 500)
+    private String rejectionReason;
 
+    // Owner's note when a CHANGE (reapproval) request was rejected.
+    // The request itself stays APPROVED.
+    @Column(length = 500)
+    private String changeRejectionReason;
     @Enumerated(EnumType.STRING)
     private DateType dateType;
 
@@ -45,6 +51,8 @@ public class LeaveRequest {
 
     @Enumerated(EnumType.STRING)
     private Status status=Status.PENDING;
+
+
 
     @Enumerated(EnumType.STRING)
     private LeaveType leaveType;

@@ -63,8 +63,14 @@ public class PermissionRequest {
     @Column(length = 500)
     private String reason;
 
-    @Enumerated(EnumType.STRING)
+        @Enumerated(EnumType.STRING)
     private Status status = Status.PENDING;
+
+        @Column(length = 500)
+    private String rejectionReason;
+
+    @Column(length = 500)
+    private String changeRejectionReason;
 
     @CreationTimestamp
     @Column(updatable = false)

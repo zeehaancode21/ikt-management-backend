@@ -119,12 +119,13 @@ public class LeaveController {
         }
     }
 
-    // Notifies the employee once their leave (or change request) has been
-    // approved/rejected by an OWNER/ADMIN/MANAGER.
-    private void notifyEmployeeOfLeaveDecision(LeaveRequest leave, Status decision) {
+        private void notifyEmployeeOfLeaveDecision(LeaveRequest leave, Status decision, String rejectionReason) {
         boolean approved = decision == Status.APPROVED;
         String content = "Your leave request (" + describeLeave(leave) + ") was "
                 + (approved ? "approved" : "rejected") + ".";
+        if (!approved && rejectionReason != null && !rejectionReason.isBlank()) {
+            content += " Reason: " + rejectionReason;
+        }
         String title = approved ? "✅ Leave Approved" : "❌ Leave Rejected";
 
         notifyLeaveEvent(leave.getEmployeeName(), currentUsername(), content,
@@ -162,8 +163,19 @@ public class LeaveController {
             String message
     ) {}
 
-    // Internal result of running the Short Leave rules against a request.
+        // Internal result of running the Short Leave rules against a request.
     private record ShortLeaveOutcome(boolean converted, String errorMessage) {}
+
+    // Optional body for approve/reject. `reason` is an optional owner comment
+    // and is only used when rejecting.
+    public record DecisionRequest(String reason) {}
+
+    private static String cleanReason(DecisionRequest body) {
+        if (body == null || body.reason() == null) return null;
+        String r = body.reason().trim();
+        if (r.isEmpty()) return null;
+        return r.length() > 500 ? r.substring(0, 500) : r;
+    }
 
     // Only OWNER, ADMIN, MANAGER can see pending leaves.
     // Includes both brand-new PENDING requests and REAPPROVAL_PENDING
@@ -428,6 +440,7 @@ public class LeaveController {
             leave.setPendingLeaveType(body.leaveType() != null ? body.leaveType() : leave.getLeaveType());
             leave.setPendingReason(body.reason() != null && !body.reason().isBlank() ? body.reason() : leave.getReason());
             leave.setPendingDays(newDays);
+            leave.setChangeRejectionReason(null);
             leave.setStatus(Status.REAPPROVAL_PENDING);
 
             LeaveRequest saved = repo.save(leave);
@@ -468,7 +481,8 @@ public class LeaveController {
     @PutMapping("/{leave_request_id}/{status}")
     public ResponseEntity<?> updateLeaveRequest(
             @PathVariable Long leave_request_id,
-            @PathVariable Status status
+            @PathVariable Status status,
+            @RequestBody(required = false) DecisionRequest body
     ) {
         String role = getUserRole(currentUsername());
         if (!List.of("OWNER", "ADMIN", "MANAGER").contains(role)) {
@@ -477,6 +491,8 @@ public class LeaveController {
         if (status != Status.APPROVED && status != Status.REJECTED) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Status must be APPROVED or REJECTED.");
         }
+
+               final String rejectionReason = (status == Status.REJECTED) ? cleanReason(body) : null;
 
         repo.findById(leave_request_id).ifPresent(leave -> {
             if (leave.getStatus() == Status.REAPPROVAL_PENDING) {
@@ -495,11 +511,13 @@ public class LeaveController {
                 // request never touches the original approved leave.
                 clearPendingFields(leave);
                 leave.setStatus(Status.APPROVED);
-            } else {
+                leave.setChangeRejectionReason(status == Status.REJECTED ? rejectionReason : null);
+                        } else {
                 leave.setStatus(status);
+                leave.setRejectionReason(status == Status.REJECTED ? rejectionReason : null);
             }
             LeaveRequest saved = repo.save(leave);
-            notifyEmployeeOfLeaveDecision(saved, status);
+            notifyEmployeeOfLeaveDecision(saved, status, rejectionReason);
         });
 
         return ResponseEntity.ok().build();
