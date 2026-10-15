@@ -68,6 +68,7 @@ public class SecurityConfig {
                     "/v3/api-docs/**",
                     "/swagger-ui/**",
                     "/swagger-ui.html",
+                    "/public/share/**",
                     // Public by design: the AI image provider fetches user
                     // reference images from this URL — see AiImageController.
                     "/social-post/ai-image/reference-source/**"

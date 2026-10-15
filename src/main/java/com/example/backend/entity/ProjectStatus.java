@@ -49,6 +49,20 @@ public class ProjectStatus {
     @Column(name = "fab_status")
     private String fabStatus;
 
+    @Column(name = "rfi_recipient_email")
+    private String rfiRecipientEmail;
+
+    /**
+     * Comma-separated CC addresses from the most recently SENT RFI on this
+     * project (written back the same way/place as rfiRecipientEmail — see
+     * RfiServiceImpl#createAndSendRfi). Lets the Create RFI form default
+     * its CC field to "whatever I CC'd last time" the same way the To
+     * field already defaults from rfiRecipientEmail, instead of starting
+     * empty every time.
+     */
+    @Column(name = "rfi_cc_emails", columnDefinition = "TEXT")
+    private String rfiCcEmails;
+
     @Column(columnDefinition = "TEXT")
     private String remarks;
 

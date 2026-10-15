@@ -65,7 +65,7 @@ public class Folder {
     private Long parentId;
 
    /** Child sub-folders (never circular — tree is strictly parent → child). */
-    @OneToMany(mappedBy = "parent", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
+    @OneToMany(mappedBy = "parent", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @BatchSize(size = 25)
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
@@ -73,7 +73,7 @@ public class Folder {
     private List<Folder> subFolders = new ArrayList<>();
 
     /** Files uploaded directly into this folder. */
-    @OneToMany(mappedBy = "folder", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
+    @OneToMany(mappedBy = "folder", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @BatchSize(size = 25)
     @ToString.Exclude
     @EqualsAndHashCode.Exclude

@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import com.example.backend.dto.EmployeeDocumentMeta;
 import com.example.backend.entity.*;
 import com.example.backend.repository.*;
 import com.example.backend.security.VaultTokenUtil;
@@ -200,7 +201,7 @@ public class VaultController {
         Map<String, Object> result = new LinkedHashMap<>();
 
         List<Map<String, Object>> docs = new ArrayList<>();
-        for (EmployeeDocument doc : documentRepo.findByEmployeeUsername(username)) {
+        for (EmployeeDocumentMeta doc : documentRepo.findMetaByEmployeeUsername(username)) { // no file bytes
             Map<String, Object> d = new LinkedHashMap<>();
             d.put("id", doc.getId());
             d.put("docType", doc.getDocType());

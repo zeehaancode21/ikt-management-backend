@@ -5,11 +5,10 @@ import com.example.backend.entity.Attachment;
 import com.example.backend.repository.UserRepository;
 import com.example.backend.service.FileStorageService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.MediaTypeFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
@@ -17,8 +16,6 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.List;
 
 @RestController
@@ -51,26 +48,36 @@ public class AttachmentController {
     }
 
     /**
+     * ETag for an attachment. An attachment's bytes never change for a given id, so id + size is
+     * enough. The browser re-asks "has it changed?" with If-None-Match and gets a tiny 304 instead
+     * of the whole file again (saves network + a database read). Access is still checked on
+     * every request before the 304 is sent, so a revoked user never gets a cached copy served.
+     */
+    private static String attachmentEtag(Attachment a) {
+        return "\"att-" + a.getId() + "-" + a.getFileSize() + "\"";
+    }
+
+    private static boolean etagMatches(String ifNoneMatch, String etag) {
+        return ifNoneMatch != null && ifNoneMatch.contains(etag);
+    }
+
+    /**
      * Resolve a MediaType for the file: prefer the MIME type captured at
-     * upload time, fall back to probing the file on disk, and only default
+     * upload time, fall back to guessing from the file name, and only default
      * to a generic binary type if both fail.
      */
-    private MediaType resolveMediaType(Attachment attachment, Path filePath) {
+    private MediaType resolveMediaType(Attachment attachment) {
         String stored = attachment.getFileType();
         if (stored != null && !stored.isBlank()) {
             try {
                 return MediaType.parseMediaType(stored);
             } catch (Exception ignored) {
-                // fall through to probing
+                // fall through to guessing from the name
             }
         }
-        try {
-            String probed = Files.probeContentType(filePath);
-            if (probed != null) {
-                return MediaType.parseMediaType(probed);
-            }
-        } catch (IOException ignored) {
-            // fall through to default
+        String name = attachment.getOriginalName();
+        if (name != null) {
+            return MediaTypeFactory.getMediaType(name).orElse(MediaType.APPLICATION_OCTET_STREAM);
         }
         return MediaType.APPLICATION_OCTET_STREAM;
     }
@@ -90,15 +97,22 @@ public class AttachmentController {
      * This is the explicit, user-initiated download action (the 📥 button).
      */
     @GetMapping("/{id}/download")
-    public ResponseEntity<Resource> downloadFile(@PathVariable Long id) {
+    public ResponseEntity<byte[]> downloadFile(@PathVariable Long id,
+            @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
         try {
             Attachment attachment = fileStorageService.getAttachment(id);
             requireAttachmentAccess(attachment);
-            Path filePath = fileStorageService.getFilePath(id);
 
-            Resource resource = new UrlResource(filePath.toUri());
+            String etag = attachmentEtag(attachment);
+            if (etagMatches(ifNoneMatch, etag)) {
+                return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
+                    .eTag(etag)
+                    .header(HttpHeaders.CACHE_CONTROL, "private, no-cache")
+                    .build();
+            }
 
-            if (!resource.exists()) {
+            byte[] data = fileStorageService.getFileBytes(id);
+            if (data == null) {
                 return ResponseEntity.notFound().build();
             }
 
@@ -106,7 +120,9 @@ public class AttachmentController {
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                     "attachment; filename=\"" + attachment.getOriginalName() + "\"")
-                .body(resource);
+                .eTag(etag)
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-cache")
+                .body(data);
         } catch (IOException e) {
             return ResponseEntity.internalServerError().build();
         }
@@ -121,24 +137,32 @@ public class AttachmentController {
      * limitation, not something a server header can override.
      */
     @GetMapping("/{id}/preview")
-    public ResponseEntity<Resource> previewFile(@PathVariable Long id) {
+    public ResponseEntity<byte[]> previewFile(@PathVariable Long id,
+            @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
         try {
             Attachment attachment = fileStorageService.getAttachment(id);
             requireAttachmentAccess(attachment);
-            Path filePath = fileStorageService.getFilePath(id);
-            Resource resource = new UrlResource(filePath.toUri());
 
-            if (!resource.exists()) {
+            String etag = attachmentEtag(attachment);
+            if (etagMatches(ifNoneMatch, etag)) {
+                return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
+                    .eTag(etag)
+                    .header(HttpHeaders.CACHE_CONTROL, "private, no-cache")
+                    .build();
+            }
+
+            byte[] data = fileStorageService.getFileBytes(id);
+            if (data == null) {
                 return ResponseEntity.notFound().build();
             }
 
-            MediaType mediaType = resolveMediaType(attachment, filePath);
-
             return ResponseEntity.ok()
-                .contentType(mediaType)
+                .contentType(resolveMediaType(attachment))
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                     "inline; filename=\"" + attachment.getOriginalName() + "\"")
-                .body(resource);
+                .eTag(etag)
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-cache")
+                .body(data);
         } catch (IOException e) {
             return ResponseEntity.internalServerError().build();
         }

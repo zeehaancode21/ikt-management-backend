@@ -1,13 +1,14 @@
 package com.example.backend;
-import org.springframework.scheduling.annotation.EnableAsync;
-import org.springframework.scheduling.annotation.EnableScheduling;
+import java.util.concurrent.Executor;
+
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.web.config.EnableSpringDataWebSupport;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
-import java.util.concurrent.Executor;
 
 @SpringBootApplication
 @EnableAsync
@@ -24,6 +25,9 @@ public class BackendApplication {
         executor.setCorePoolSize(4);
         executor.setMaxPoolSize(10);
         executor.setQueueCapacity(100);
+        // Idle threads are released after 30s instead of living forever (saves RAM; same capacity)
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.setKeepAliveSeconds(30);
         executor.setThreadNamePrefix("fcm-async-");
         executor.initialize();
         return executor;

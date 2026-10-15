@@ -42,6 +42,7 @@ public class JwtFilter extends OncePerRequestFilter {
             path.startsWith("/actuator/health") ||
             path.startsWith("/v3/api-docs") ||
             path.startsWith("/swagger-ui") ||
+            path.startsWith("/public/share/") || 
             // Public by design: the AI image provider fetches user reference
             // images from this URL — see AiImageController/ReferenceImageCacheService.
             path.startsWith("/social-post/ai-image/reference-source")

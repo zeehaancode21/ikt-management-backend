@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import com.example.backend.dto.DocumentMetaView;
 import com.example.backend.entity.Document;
 import com.example.backend.repository.DocumentRepository;
 import com.example.backend.service.DocumentUploadService;
@@ -36,13 +37,13 @@ public class DocumentController {
 
     @GetMapping
     public ResponseEntity<List<Map<String, Object>>> listAll() {
-        List<Document> docs = repo.findAllByOrderByUploadedAtDesc();
+        List<DocumentMetaView> docs = repo.findAllMeta(); // metadata only: no file bytes loaded
         return ResponseEntity.ok(docs.stream().map(this::toMeta).collect(Collectors.toList()));
     }
 
     @GetMapping("/project/{projectName}")
     public ResponseEntity<List<Map<String, Object>>> listByProject(@PathVariable String projectName) {
-        List<Document> docs = repo.findByProjectNameOrderByUploadedAtDesc(projectName);
+        List<DocumentMetaView> docs = repo.findMetaByProjectName(projectName); // no file bytes loaded
         return ResponseEntity.ok(docs.stream().map(this::toMeta).collect(Collectors.toList()));
     }
 
@@ -101,7 +102,8 @@ public class DocumentController {
 
    @GetMapping("/{id}/status")
     public ResponseEntity<Map<String, Object>> status(@PathVariable Long id) {
-        return repo.findById(id).map(doc -> {
+        // Polled while an upload is processing: metadata only, never the file bytes.
+        return repo.findMetaById(id).map(doc -> {
             Map<String, Object> meta = toMutableMeta(doc);
             meta.put("status", doc.getUploadStatus() != null ? doc.getUploadStatus() : "PROCESSING");
             return ResponseEntity.ok(meta);
@@ -125,7 +127,7 @@ public class DocumentController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Map<String, Object>> delete(@PathVariable Long id) {
         if (!repo.existsById(id)) return ResponseEntity.notFound().build();
-        repo.deleteById(id);
+        repo.deleteDocumentById(id); // single DELETE; deleteById() would load the file bytes first
         return ResponseEntity.ok(Map.of("message", "Document deleted", "id", id));
     }
 
@@ -133,31 +135,51 @@ public class DocumentController {
     public ResponseEntity<Map<String, Object>> update(
             @PathVariable Long id,
             @RequestBody Map<String, String> body) {
-        return repo.findById(id).map(doc -> {
-            if (body.containsKey("description")) doc.setDescription(body.get("description"));
-            if (body.containsKey("category")) doc.setCategory(body.get("category").toUpperCase());
-            if (body.containsKey("projectName")) doc.setProjectName(body.get("projectName"));
-            repo.save(doc);
-            return ResponseEntity.ok(toMeta(doc));
+        // Old version loaded the whole file into memory and wrote it back to the DB just to
+        // change a description. This only touches the metadata columns.
+        return repo.findMetaById(id).map(current -> {
+            String description = body.containsKey("description") ? body.get("description") : current.getDescription();
+            String category = body.containsKey("category") ? body.get("category").toUpperCase() : current.getCategory();
+            String projectName = body.containsKey("projectName") ? body.get("projectName") : current.getProjectName();
+            repo.updateMeta(id, description, category, projectName);
+            return ResponseEntity.ok(toMeta(repo.findMetaById(id).orElse(current)));
         }).orElse(ResponseEntity.notFound().build());
     }
 
     private Map<String, Object> toMeta(Document doc) {
+        return meta(doc.getId(), doc.getFileName(), doc.getOriginalFileName(), doc.getFileType(),
+                doc.getFileSize(), doc.getDescription(), doc.getCategory(), doc.getProjectName(),
+                doc.getUploadedBy(), doc.getUploadedAt());
+    }
+
+    private Map<String, Object> toMeta(DocumentMetaView doc) {
+        return meta(doc.getId(), doc.getFileName(), doc.getOriginalFileName(), doc.getFileType(),
+                doc.getFileSize(), doc.getDescription(), doc.getCategory(), doc.getProjectName(),
+                doc.getUploadedBy(), doc.getUploadedAt());
+    }
+
+    private Map<String, Object> meta(Long id, String fileName, String originalFileName, String fileType,
+                                     Long fileSize, String description, String category, String projectName,
+                                     String uploadedBy, java.time.LocalDateTime uploadedAt) {
         return Map.of(
-                "id", doc.getId(),
-                "fileName", doc.getFileName() != null ? doc.getFileName() : "",
-                "originalFileName", doc.getOriginalFileName() != null ? doc.getOriginalFileName() : "",
-                "fileType", doc.getFileType() != null ? doc.getFileType() : "",
-                "fileSize", doc.getFileSize() != null ? doc.getFileSize() : 0L,
-                "description", doc.getDescription() != null ? doc.getDescription() : "",
-                "category", doc.getCategory() != null ? doc.getCategory() : "GENERAL",
-                "projectName", doc.getProjectName() != null ? doc.getProjectName() : "",
-                "uploadedBy", doc.getUploadedBy() != null ? doc.getUploadedBy() : "",
-                "uploadedAt", doc.getUploadedAt() != null ? doc.getUploadedAt().toString() : ""
+                "id", id,
+                "fileName", fileName != null ? fileName : "",
+                "originalFileName", originalFileName != null ? originalFileName : "",
+                "fileType", fileType != null ? fileType : "",
+                "fileSize", fileSize != null ? fileSize : 0L,
+                "description", description != null ? description : "",
+                "category", category != null ? category : "GENERAL",
+                "projectName", projectName != null ? projectName : "",
+                "uploadedBy", uploadedBy != null ? uploadedBy : "",
+                "uploadedAt", uploadedAt != null ? uploadedAt.toString() : ""
         );
     }
 
     private java.util.HashMap<String, Object> toMutableMeta(Document doc) {
+        return new java.util.HashMap<>(toMeta(doc));
+    }
+
+    private java.util.HashMap<String, Object> toMutableMeta(DocumentMetaView doc) {
         return new java.util.HashMap<>(toMeta(doc));
     }
 }

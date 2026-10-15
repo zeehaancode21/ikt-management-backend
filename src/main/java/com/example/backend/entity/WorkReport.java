@@ -11,7 +11,9 @@ import org.hibernate.annotations.CreationTimestamp;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Table(name = "work_report")
+@Table(name = "work_report", indexes = {
+        @Index(name = "idx_work_report_employee_date", columnList = "employeeName, date")
+})
 public class WorkReport {
 
     @Id

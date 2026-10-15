@@ -94,7 +94,8 @@ public class ProfileController {
     }
 
     private Map<String, Object> toResponse(String username) {
-        EmployeeProfile profile = profileRepo.findByUsername(username).orElse(null);
+        // Summary projection: findByUsername() would also load the profile picture (up to 5 MB).
+        com.example.backend.dto.ProfileSummaryView profile = profileRepo.findSummaryByUsername(username).orElse(null);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("username", username);
         result.put("fullName", profile != null ? profile.getFullName() : null);
@@ -108,7 +109,7 @@ public class ProfileController {
         // Employee Management. Null/blank means the caller should fall back
         // to displaying the system role instead.
         result.put("roleName", profile != null ? profile.getRoleName() : null);
-        result.put("hasProfilePicture", profile != null && profile.getProfilePicture() != null);
+        result.put("hasProfilePicture", profile != null && profileRepo.countWithPicture(username) > 0);
         // Annual leave entitlement, derived from date of joining: 24 days
         // once the employee has completed 3 years of service, 18 before that.
         result.put("leaveLimit", LeavePolicy.leaveLimitFor(dateOfJoining));
@@ -159,16 +160,24 @@ public class ProfileController {
             }
         }
 
-        EmployeeProfile profile = profileRepo.findByUsername(username).orElseGet(EmployeeProfile::new);
-        profile.setUsername(username);
-        profile.setFullName(req.fullName());
-        profile.setEmail(req.email()); // ADD THIS LINE
-        profile.setDateOfBirth(req.dateOfBirth());
-        profile.setDateOfJoining(req.dateOfJoining());
-        profile.setMobileNo(req.mobileNo());
-        profile.setCurrentAddress(req.currentAddress());
-        profile.setUpdatedBy(currentUsername());
-        profileRepo.save(profile);
+        if (profileRepo.existsByUsername(username)) {
+            // Existing profile: update just these columns. The old load + save pulled the profile
+            // picture (up to 5 MB) into memory and wrote it back to the DB on every edit.
+            profileRepo.updateProfileFields(username, req.fullName(), req.email(), req.dateOfBirth(),
+                    req.dateOfJoining(), req.mobileNo(), req.currentAddress(), currentUsername(),
+                    java.time.LocalDateTime.now());
+        } else {
+            EmployeeProfile profile = new EmployeeProfile();
+            profile.setUsername(username);
+            profile.setFullName(req.fullName());
+            profile.setEmail(req.email());
+            profile.setDateOfBirth(req.dateOfBirth());
+            profile.setDateOfJoining(req.dateOfJoining());
+            profile.setMobileNo(req.mobileNo());
+            profile.setCurrentAddress(req.currentAddress());
+            profile.setUpdatedBy(currentUsername());
+            profileRepo.save(profile);
+        }
 
         // Keep users.email in sync with employee_profiles.email.
         // Root cause of the original bug: this method only ever wrote the
@@ -243,12 +252,19 @@ public class ProfileController {
         }
 
         try {
-            EmployeeProfile profile = profileRepo.findByUsername(username).orElseGet(EmployeeProfile::new);
-            profile.setUsername(username);
-            profile.setProfilePicture(file.getBytes());
-            profile.setProfilePictureContentType(contentType);
-            profile.setUpdatedBy(currentUsername());
-            profileRepo.save(profile);
+            byte[] pictureBytes = file.getBytes();
+            if (profileRepo.existsByUsername(username)) {
+                // Replaces the picture without first loading the old one.
+                profileRepo.updatePicture(username, pictureBytes, contentType, currentUsername(),
+                        java.time.LocalDateTime.now());
+            } else {
+                EmployeeProfile profile = new EmployeeProfile();
+                profile.setUsername(username);
+                profile.setProfilePicture(pictureBytes);
+                profile.setProfilePictureContentType(contentType);
+                profile.setUpdatedBy(currentUsername());
+                profileRepo.save(profile);
+            }
         } catch (IOException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Could not read uploaded image");
         }
@@ -257,7 +273,19 @@ public class ProfileController {
 
     /** Open to any authenticated user — needed wherever a colleague's photo is shown. */
     @GetMapping("/picture/{username}")
-    public ResponseEntity<byte[]> getPicture(@PathVariable String username) {
+    public ResponseEntity<byte[]> getPicture(@PathVariable String username,
+            @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
+        // Cheap check first: if the browser already has this exact version, answer 304 without
+        // loading the picture (up to 5 MB) from the database or sending it again.
+        String etag = profileRepo.findPictureVersion(username)
+                .map(v -> "\"pic-" + username + "-" + v + "\"")
+                .orElse(null);
+        if (etag != null && ifNoneMatch != null && ifNoneMatch.contains(etag)) {
+            return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
+                    .eTag(etag)
+                    .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
+                    .build();
+        }
         EmployeeProfile profile = profileRepo.findByUsername(username).orElse(null);
         if (profile == null || profile.getProfilePicture() == null) {
             return ResponseEntity.notFound().build();
@@ -265,9 +293,12 @@ public class ProfileController {
         MediaType mediaType = profile.getProfilePictureContentType() != null
                 ? MediaType.parseMediaType(profile.getProfilePictureContentType())
                 : MediaType.IMAGE_JPEG;
-        return ResponseEntity.ok()
+        ResponseEntity.BodyBuilder ok = ResponseEntity.ok()
                 .contentType(mediaType)
-                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
-                .body(profile.getProfilePicture());
+                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300");
+        if (etag != null) {
+            ok.eTag(etag);
+        }
+        return ok.body(profile.getProfilePicture());
     }
 }

@@ -1,0 +1,20 @@
+# Your project folder is ~110 MB mostly because of these; none belong in the build.
+target
+uploads
+node_modules
+package-lock.json
+linkedin_post_log.txt
+# secrets / local-only
+env.local.sh
+.env
+# tooling
+.git
+.github
+.idea
+.vscode
+.mvn
+mvnw
+mvnw.cmd
+.DS_Store
+__MACOSX
+*.md

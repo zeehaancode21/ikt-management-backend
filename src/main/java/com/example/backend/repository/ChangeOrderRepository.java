@@ -1,5 +1,6 @@
 package com.example.backend.repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -16,6 +17,13 @@ import com.example.backend.entity.ChangeOrder;
 public interface ChangeOrderRepository extends JpaRepository<ChangeOrder, Long> {
 
     List<ChangeOrder> findByProjectNameOrderByIdAsc(String projectName);
+
+    /**
+     * Change orders for MANY projects in a single query (used by the public
+     * share view, which is polled repeatedly, so it must not issue one query
+     * per project).
+     */
+    List<ChangeOrder> findByProjectNameInOrderByIdAsc(Collection<String> projectNames);
 
     /** Renames a project across all change orders that reference it (no client column on this table). */
     @Modifying

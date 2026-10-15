@@ -19,7 +19,10 @@ import java.util.UUID;
 @Entity
 @Data
 @NoArgsConstructor
-@Table(name = "scheduled_posts")
+@Table(
+        name = "scheduled_posts",
+        indexes = @Index(name = "idx_status_scheduled_for", columnList = "status, scheduled_for")
+)
 public class ScheduledPost {
 
     @Id

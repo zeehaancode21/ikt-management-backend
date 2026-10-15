@@ -12,11 +12,21 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 @Entity
+@Table(indexes = {
+        // per-employee history / month report / short-leave quota lookups
+        @Index(name = "idx_leave_employee_from", columnList = "employeeName, fromDate"),
+        // owner's pending queue
+        @Index(name = "idx_leave_status", columnList = "status"),
+        // "who is on leave today" and yearly summary range scans
+        @Index(name = "idx_leave_from_to", columnList = "fromDate, toDate")
+})
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

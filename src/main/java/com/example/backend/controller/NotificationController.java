@@ -52,7 +52,10 @@ public class NotificationController {
     private static final Map<String, List<String>> MODULE_TYPES = Map.of(
         "messages", List.of("MESSAGE"),
         "leave", List.of("LEAVE_REQUEST", "LEAVE_APPROVED", "LEAVE_REJECTED"),
-        "permission", List.of("PERMISSION_REQUEST", "PERMISSION_APPROVED", "PERMISSION_REJECTED")
+        "permission", List.of("PERMISSION_REQUEST", "PERMISSION_APPROVED", "PERMISSION_REJECTED"),
+        // Sent to any employee CC'd on an RFI whenever it's created, resubmitted,
+        // reopened, re-statused, or gets a reply — see RfiCcNotificationService.
+        "rfi", List.of("RFI_UPDATE")
     );
 
     /**
@@ -153,10 +156,10 @@ public class NotificationController {
         }
 
        // Fetch all users (except the sender/owner)
-        List<String> allUsernames = userRepo.findAll()
+        final String sender = currentUsername();
+        List<String> allUsernames = userRepo.findAllUsernames()
                 .stream()
-                .map(u -> u.getUsername())
-                .filter(u -> !u.equals(currentUsername()))
+                .filter(u -> !u.equals(sender))
                 .toList();
 
         // Was: attachmentRepository.findById() called once PER USER PER ATTACHMENT (N+1,

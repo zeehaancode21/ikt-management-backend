@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import com.example.backend.dto.EmployeeDocumentMeta;
 import com.example.backend.entity.*;
 import com.example.backend.repository.*;
 import com.example.backend.service.EncryptionService;
@@ -77,8 +78,9 @@ public class KycController {
     }
 
    private Map<String, Object> buildStatus(String username) {
-        Map<String, EmployeeDocument> existing = new HashMap<>();
-        for (EmployeeDocument d : documentRepo.findByEmployeeUsername(username)) {
+        Map<String, EmployeeDocumentMeta> existing = new HashMap<>();
+        // Metadata only: the old version loaded every encrypted file just to build a checklist.
+        for (EmployeeDocumentMeta d : documentRepo.findMetaByEmployeeUsername(username)) {
             existing.put(d.getDocType().name(), d);
         }
         boolean hasBankDetails = bankRepo.findByEmployeeUsername(username).isPresent();
@@ -93,13 +95,13 @@ public class KycController {
      */
     private Map<String, Object> buildStatusFromData(
             String username,
-            Map<String, EmployeeDocument> existingByDocType,
+            Map<String, EmployeeDocumentMeta> existingByDocType,
             boolean hasBankDetails) {
 
         List<Map<String, Object>> checklist = new ArrayList<>();
         List<String> missing = new ArrayList<>();
         for (DocumentType type : REQUIRED_DOC_TYPES) {
-            EmployeeDocument doc = existingByDocType.get(type.name());
+            EmployeeDocumentMeta doc = existingByDocType.get(type.name());
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("docType", type.name());
             item.put("uploaded", doc != null);
@@ -142,8 +144,9 @@ public class KycController {
         }
 
         // Was: 2 queries PER employee (N+1) -> now exactly 2 queries total, regardless of employee count.
-        Map<String, Map<String, EmployeeDocument>> docsByUsername = new HashMap<>();
-        for (EmployeeDocument d : documentRepo.findByEmployeeUsernameIn(usernames)) {
+        Map<String, Map<String, EmployeeDocumentMeta>> docsByUsername = new HashMap<>();
+        // Metadata only: this used to load EVERY employee's encrypted KYC files into memory at once.
+        for (EmployeeDocumentMeta d : documentRepo.findMetaByEmployeeUsernameIn(usernames)) {
             docsByUsername
                     .computeIfAbsent(d.getEmployeeUsername(), k -> new HashMap<>())
                     .put(d.getDocType().name(), d);
@@ -156,7 +159,7 @@ public class KycController {
 
         List<Map<String, Object>> result = new ArrayList<>();
         for (String username : usernames) {
-            Map<String, EmployeeDocument> existing = docsByUsername.getOrDefault(username, Map.of());
+            Map<String, EmployeeDocumentMeta> existing = docsByUsername.getOrDefault(username, Map.of());
             boolean hasBankDetails = usernamesWithBankDetails.contains(username);
             result.add(buildStatusFromData(username, existing, hasBankDetails));
         }

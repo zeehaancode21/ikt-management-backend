@@ -89,9 +89,9 @@ public class AuthController {
         // Custom display title (e.g. "Senior Checker") set by an admin via
         // Employee Management. The frontend falls back to displaying the
         // system role (below) when this is absent.
-        String roleName = employeeProfileRepository.findByUsername(dbUser.getUsername())
-                .map(EmployeeProfile::getRoleName)
-                .filter(rn -> rn != null && !rn.isBlank())
+        // Was findByUsername(): loaded the whole profile incl. picture (up to 5 MB) on EVERY login.
+        String roleName = employeeProfileRepository.findRoleNameByUsername(dbUser.getUsername())
+                .filter(rn -> !rn.isBlank())
                 .orElse(null);
 
         Map<String, String> response = new LinkedHashMap<>();

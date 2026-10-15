@@ -4,7 +4,9 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "fcm_tokens")
+@Table(name = "fcm_tokens", indexes = {
+        @Index(name = "idx_fcm_username", columnList = "username")
+})
 public class FcmToken {
 
     @Id

@@ -41,6 +41,12 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
            "m.senderUsername = :username OR m.receiverUsername = :username")
     Page<Message> findAllInvolving(@Param("username") String username, Pageable pageable);
 
+    // Only this user's messages (used when deleting an employee) — replaces
+    // messageRepository.findAll() + filtering in Java, which loaded EVERY
+    // message in the system into memory.
+    @Query("SELECT m FROM Message m WHERE m.senderUsername = :username OR m.receiverUsername = :username")
+    List<Message> findAllByParticipant(@Param("username") String username);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM Message m WHERE m.senderUsername = :username OR m.receiverUsername = :username")

@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -28,7 +29,11 @@ public class LinkedInService {
     private final ObjectMapper objectMapper;
 
     public LinkedInService() {
-        this.restTemplate = new RestTemplate();
+        // No timeouts before: a stalled LinkedIn call held a request thread forever.
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(60_000); // image upload step can be slow
+        this.restTemplate = new RestTemplate(factory);
         this.objectMapper = new ObjectMapper();
     }
 

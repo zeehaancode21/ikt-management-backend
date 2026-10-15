@@ -1,11 +1,15 @@
 package com.example.backend.controller;
 
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Predicate;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,8 +25,8 @@ import org.springframework.http.ResponseEntity;
 
 import com.example.backend.dto.EmployeeDaysAggregate;
 import com.example.backend.dto.EmployeeJoinDateProjection;
+import com.example.backend.dto.LeaveTodayRow;
 import com.example.backend.entity.DateType;
-import com.example.backend.entity.EmployeeProfile;
 import com.example.backend.entity.LeaveRequest;
 import com.example.backend.entity.LeaveType;
 import com.example.backend.entity.Notification;
@@ -32,6 +36,7 @@ import com.example.backend.repository.LeaveRequestRepository;
 import com.example.backend.repository.NotificationRepository;
 import com.example.backend.repository.UserRepository;
 import com.example.backend.service.FcmService;
+import com.example.backend.service.HolidayCalendar;
 import com.example.backend.service.LeavePolicy;
 
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -61,13 +66,18 @@ public class LeaveController {
     private final NotificationRepository notifRepo;
     private final SimpMessagingTemplate messagingTemplate;
     private final FcmService fcmService;
+    // Shared small pool (see AsyncConfig) — notification fan-out runs here so
+    // the employee's request returns without waiting on it.
+    private final Executor asyncExecutor;
 
     public LeaveController(LeaveRequestRepository repo,
                             UserRepository userRepo,
                             EmployeeProfileRepository profileRepo,
                             NotificationRepository notifRepo,
                             SimpMessagingTemplate messagingTemplate,
-                            FcmService fcmService) {
+                            FcmService fcmService,
+                            @Qualifier("uploadExecutor") Executor asyncExecutor) {
+        this.asyncExecutor = asyncExecutor;
         this.repo = repo;
         this.userRepo = userRepo;
         this.profileRepo = profileRepo;
@@ -103,23 +113,48 @@ public class LeaveController {
         }
     }
 
-    // Notifies every OWNER/ADMIN/MANAGER (except the requester, just in case)
-    // that a new leave request needs their attention.
-    private void notifyApproversOfNewLeaveRequest(LeaveRequest leave) {
-        String requester = leave.getEmployeeName();
-        List<String> approvers = userRepo.findUsernamesByRoles(List.of("OWNER", "ADMIN", "MANAGER")).stream()
-                .filter(u -> !u.equals(requester))
-                .toList();
-
-        String content = requester + " requested " + describeLeave(leave);
-        String fcmBody = content.length() > 100 ? content.substring(0, 100) + "..." : content;
-
-        for (String approver : approvers) {
-            notifyLeaveEvent(approver, requester, content, "LEAVE_REQUEST", "🗓️ New Leave Request", fcmBody);
+    // Notifications are a side effect — the API response must not wait for
+    // them (DB writes + websocket + push). They run on the shared executor;
+    // if its queue is ever full we simply run inline, so none are dropped.
+    private void runInBackground(Runnable task) {
+        Runnable safe = () -> {
+            try {
+                task.run();
+            } catch (Exception e) {
+                System.err.println("Leave notification failed: " + e.getMessage());
+            }
+        };
+        try {
+            asyncExecutor.execute(safe);
+        } catch (RejectedExecutionException e) {
+            safe.run();
         }
     }
 
-        private void notifyEmployeeOfLeaveDecision(LeaveRequest leave, Status decision, String rejectionReason) {
+    // Notifies every OWNER/ADMIN/MANAGER (except the requester, just in case)
+    // that a new leave request needs their attention.
+    private void notifyApproversOfNewLeaveRequest(LeaveRequest leave) {
+        notifyApproversOfLeave(leave, "requested", "🗓️ New Leave Request");
+    }
+
+    private void notifyApproversOfLeave(LeaveRequest leave, String verb, String fcmTitle) {
+        // Everything that reads request-scoped data is computed here, on the
+        // request thread; only DB/websocket/push work is moved off it.
+        final String requester = leave.getEmployeeName();
+        final String content = requester + " " + verb + " " + describeLeave(leave);
+        final String fcmBody = content.length() > 100 ? content.substring(0, 100) + "..." : content;
+
+        runInBackground(() -> {
+            List<String> approvers = userRepo.findUsernamesByRoles(List.of("OWNER", "ADMIN", "MANAGER")).stream()
+                    .filter(u -> !u.equals(requester))
+                    .toList();
+            for (String approver : approvers) {
+                notifyLeaveEvent(approver, requester, content, "LEAVE_REQUEST", fcmTitle, fcmBody);
+            }
+        });
+    }
+
+    private void notifyEmployeeOfLeaveDecision(LeaveRequest leave, Status decision, String rejectionReason) {
         boolean approved = decision == Status.APPROVED;
         String content = "Your leave request (" + describeLeave(leave) + ") was "
                 + (approved ? "approved" : "rejected") + ".";
@@ -128,8 +163,12 @@ public class LeaveController {
         }
         String title = approved ? "✅ Leave Approved" : "❌ Leave Rejected";
 
-        notifyLeaveEvent(leave.getEmployeeName(), currentUsername(), content,
-                approved ? "LEAVE_APPROVED" : "LEAVE_REJECTED", title, content);
+        // currentUsername() reads a thread-local, so capture it BEFORE going async.
+        final String employee = leave.getEmployeeName();
+        final String decidedBy = currentUsername();
+        final String finalContent = content;
+        runInBackground(() -> notifyLeaveEvent(employee, decidedBy, finalContent,
+                approved ? "LEAVE_APPROVED" : "LEAVE_REJECTED", title, finalContent));
     }
 
     private String describeLeave(LeaveRequest leave) {
@@ -141,6 +180,46 @@ public class LeaveController {
             return type + " from " + leave.getFromDate() + " to " + leave.getToDate();
         }
         return type + " on " + leave.getFromDate();
+    }
+
+    // ── Weekend / holiday rules ─────────────────────────────────────────
+    // Leave can never be applied on a Saturday, Sunday or government
+    // holiday (they are already days off). Used by apply, edit-pending and
+    // request-change so all three paths enforce exactly the same rule.
+    //   • SINGLE / HALF_DAY / SHORT_LEAVE: the one date must be a working day.
+    //   • RANGE: the first and last date must be working days; weekends and
+    //     holidays that fall *inside* the range are allowed but are not
+    //     counted as leave days (see computeDays).
+    // Returns a user-facing error message, or null when the dates are fine.
+    private String validateLeaveDates(LocalDate from, LocalDate to, DateType type) {
+        if (from == null) {
+            return "A date is required.";
+        }
+        String fromProblem = HolidayCalendar.blockReason(from);
+        if (fromProblem != null) {
+            return fromProblem;
+        }
+        if (type == DateType.RANGE && to != null) {
+            if (to.isBefore(from)) {
+                return "End date cannot be before start date.";
+            }
+            String toProblem = HolidayCalendar.blockReason(to);
+            if (toProblem != null) {
+                return toProblem;
+            }
+        }
+        return null;
+    }
+
+    // Server-side leave-day count, so the client can't send a wrong number
+    // and weekends/holidays inside a range aren't charged as leave.
+    private double computeDays(DateType type, LocalDate from, LocalDate to, Double clientDays) {
+        if (type == DateType.RANGE && from != null && to != null) {
+            return HolidayCalendar.workingDaysBetween(from, to);
+        }
+        if (type == DateType.HALF_DAY) return 0.5;
+        if (type == DateType.SINGLE) return 1.0;
+        return clientDays != null ? clientDays : 0.0;
     }
 
     // ── DTO for the reapproval (change-request) body ────────────────────
@@ -189,10 +268,49 @@ public class LeaveController {
         return ResponseEntity.ok(repo.findByStatusIn(List.of(Status.PENDING, Status.REAPPROVAL_PENDING)));
     }
 
+    // Government holidays, so the UI can block them in the date pickers.
+    // (Saturdays/Sundays are handled by the UI directly.)
+    public record HolidayDto(LocalDate date, String name) {}
+
+    @GetMapping("/holidays")
+    public ResponseEntity<?> getHolidays() {
+        List<HolidayDto> body = HolidayCalendar.all().stream()
+                .map(h -> new HolidayDto(h.date(), h.name()))
+                .toList();
+        return ResponseEntity.ok()
+                .header("Cache-Control", "private, max-age=3600")
+                .body(body);
+    }
+
     @PostMapping("/request")
     public ResponseEntity<?> save(@RequestBody LeaveRequest leave) {
         // Always set employee name from the logged-in user — never trust what the client sends
         leave.setEmployeeName(currentUsername());
+        // Hardening: a new request is always a fresh PENDING one. Without
+        // this a client could send an id (overwriting someone else's leave)
+        // or status=APPROVED (self-approving).
+        leave.setId(null);
+        leave.setStatus(Status.PENDING);
+        leave.setSurplusPermission(false);
+        leave.setSurplusMonth(null);
+        leave.setSurplusHoursSnapshot(null);
+        leave.setRejectionReason(null);
+        leave.setChangeRejectionReason(null);
+        clearPendingFields(leave);
+
+        if (leave.getDateType() == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Leave date type is required.");
+        }
+        if (leave.getToDate() == null || leave.getDateType() != DateType.RANGE) {
+            leave.setToDate(leave.getFromDate());
+        }
+
+        // Saturday / Sunday / government-holiday check
+        String dateError = validateLeaveDates(leave.getFromDate(), leave.getToDate(), leave.getDateType());
+        if (dateError != null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(dateError);
+        }
+        leave.setDays(computeDays(leave.getDateType(), leave.getFromDate(), leave.getToDate(), leave.getDays()));
 
         boolean convertedToHalfDay = false;
         if (leave.getDateType() == DateType.SHORT_LEAVE) {
@@ -209,6 +327,70 @@ public class LeaveController {
                 ? "Heads up: this exceeded the 2-hour daily short-leave limit, so it was recorded as a Half Day leave instead."
                 : null;
         return ResponseEntity.ok(new LeaveSaveResponse(saved, convertedToHalfDay, message));
+    }
+
+    // ── Who is on leave today (visible to every logged-in user) ──────────
+    // Lets employees/leads see which colleagues have applied for leave that
+    // covers today. The approval status (approved / pending / rejected) is
+    // deliberately NOT part of the response, and requests are included
+    // whatever their status, so nobody can infer a decision from who is or
+    // isn't listed. The leave reason is also NOT part of the response.
+    // EXCEPTION: the OWNER additionally receives a "status" field per row
+    // (PENDING / APPROVED / REJECTED / REAPPROVAL_PENDING).
+    // Reads the existing leave table only — one small projection query.
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Kolkata");
+
+    @GetMapping("/today")
+    public ResponseEntity<?> getLeavesToday(@RequestParam(required = false) String date) {
+        LocalDate serverToday = LocalDate.now(BUSINESS_ZONE);
+        LocalDate target = serverToday;
+        // The browser sends its own local date so the panel is right in any
+        // timezone; anything more than a day away from server time is
+        // ignored so this endpoint can't be used to browse other days.
+        if (date != null && !date.isBlank()) {
+            try {
+                LocalDate requested = LocalDate.parse(date.trim());
+                if (Math.abs(ChronoUnit.DAYS.between(serverToday, requested)) <= 1) {
+                    target = requested;
+                }
+            } catch (Exception ignored) {
+                // bad format -> fall back to server "today"
+            }
+        }
+
+        // Only the OWNER gets to see the approval status. Employees/leads
+        // keep the original response (no status field) - decided here on the
+        // server so the status can never be read from the network tab.
+        String callerRole = String.valueOf(getUserRole(currentUsername()))
+                .trim().toUpperCase().replace("ROLE_", "");
+        boolean isOwner = "OWNER".equals(callerRole);
+
+        List<LeaveTodayRow> rows = repo.findLeavesCoveringDate(
+                target,
+                List.of(Status.APPROVED, Status.PENDING, Status.REAPPROVAL_PENDING, Status.REJECTED));
+
+        // Plain maps keep the response small and independent of the entity.
+        List<Map<String, Object>> body = rows.stream().map(r -> {
+            Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("employeeName", r.getEmployeeName());
+            m.put("leaveType", r.getLeaveType() != null ? r.getLeaveType().name() : null);
+            m.put("dateType", r.getDateType() != null ? r.getDateType().name() : null);
+            m.put("halfSession", r.getHalfSession());
+            m.put("hours", r.getHours());
+            m.put("days", r.getDays());
+            m.put("fromDate", r.getFromDate());
+            m.put("toDate", r.getToDate() != null ? r.getToDate() : r.getFromDate());
+            m.put("surplusPermission", Boolean.TRUE.equals(r.getSurplusPermission()));
+            if (isOwner) {
+                m.put("status", r.getStatus() != null ? r.getStatus().name() : null);
+            }
+            return m;
+        }).toList();
+
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                .header("Pragma", "no-cache")
+                .body(body);
     }
 
     @GetMapping("/employee")
@@ -243,8 +425,7 @@ public class LeaveController {
         if (!isOwnRecordOrManager(employeeName)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Access denied");
         }
-        LocalDate dateOfJoining = profileRepo.findByUsername(employeeName)
-                .map(EmployeeProfile::getDateOfJoining)
+        LocalDate dateOfJoining = profileRepo.findDateOfJoiningByUsername(employeeName) // no picture load
                 .orElse(null);
         // This value can change any time an employee's profile is edited,
         // so make sure browsers/proxies never serve a stale cached copy.
@@ -404,10 +585,16 @@ public class LeaveController {
 
             DateType newDateType = body.dateType() != null ? body.dateType() : leave.getDateType();
             LocalDate newFrom = body.fromDate();
-            LocalDate newTo = body.toDate() != null ? body.toDate() : body.fromDate();
-            String newHalfSession = body.halfSession();
+            LocalDate newTo = (newDateType == DateType.RANGE && body.toDate() != null) ? body.toDate() : body.fromDate();
+            String newHalfSession = newDateType == DateType.HALF_DAY ? body.halfSession() : null;
             Double newHours = body.hours();
-            Double newDays = body.days();
+
+            // Same Saturday / Sunday / holiday rule as a new application
+            String dateError = validateLeaveDates(newFrom, newTo, newDateType);
+            if (dateError != null) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(dateError);
+            }
+            Double newDays = computeDays(newDateType, newFrom, newTo, body.days());
 
             boolean convertedToHalfDay = false;
             if (newDateType == DateType.SHORT_LEAVE) {
@@ -420,6 +607,7 @@ public class LeaveController {
                 scratch.setToDate(newTo);
                 scratch.setHours(newHours);
                 scratch.setHalfSession(newHalfSession);
+                scratch.setDateType(DateType.SHORT_LEAVE);
 
                 ShortLeaveOutcome outcome = applyShortLeaveRules(scratch, leave.getId());
                 if (outcome.errorMessage() != null) {
@@ -447,6 +635,98 @@ public class LeaveController {
             notifyApproversOfNewLeaveRequest(saved);
             String message = convertedToHalfDay
                     ? "Heads up: this change exceeded the 2-hour daily short-leave limit, so it was recorded as a Half Day leave instead."
+                    : null;
+            return ResponseEntity.ok(new LeaveSaveResponse(saved, convertedToHalfDay, message));
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    // ── Edit a leave that is still PENDING ──────────────────────────────
+    // While a leave request hasn't been approved/rejected yet the employee
+    // can freely change any of its content — dates, type, half-day session,
+    // reason. The record is updated in place (it stays PENDING) and the
+    // approvers are notified that it was edited. Once it is approved, the
+    // employee must use the "reapproval" (request change) flow instead.
+    @PutMapping("/{leave_request_id}")
+    public ResponseEntity<?> editPendingLeave(
+            @PathVariable Long leave_request_id,
+            @RequestBody ReapprovalRequest body
+    ) {
+        String username = currentUsername();
+
+        return repo.findById(leave_request_id).<ResponseEntity<?>>map(leave -> {
+            if (!leave.getEmployeeName().equals(username)) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body("You can only edit your own leave.");
+            }
+            if (Boolean.TRUE.equals(leave.getSurplusPermission())) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body("System-generated permission leave cannot be edited.");
+            }
+            if (leave.getStatus() != Status.PENDING) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body("Only a pending leave can be edited. Current status: " + leave.getStatus()
+                                + (leave.getStatus() == Status.APPROVED ? ". Use \"Request change\" for approved leave." : "."));
+            }
+            if (body.fromDate() == null) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("A start date is required.");
+            }
+
+            DateType newDateType = body.dateType() != null ? body.dateType() : leave.getDateType();
+            LocalDate newFrom = body.fromDate();
+            LocalDate newTo = (newDateType == DateType.RANGE && body.toDate() != null) ? body.toDate() : body.fromDate();
+            String newHalfSession = newDateType == DateType.HALF_DAY ? body.halfSession() : null;
+            Double newHours = body.hours();
+
+            String newReason = body.reason() != null ? body.reason().trim() : "";
+            if (!newReason.isEmpty() && newReason.length() > 500) {
+                newReason = newReason.substring(0, 500);
+            }
+
+            // Saturday / Sunday / government-holiday check
+            String dateError = validateLeaveDates(newFrom, newTo, newDateType);
+            if (dateError != null) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(dateError);
+            }
+
+            boolean convertedToHalfDay = false;
+            double newDays = computeDays(newDateType, newFrom, newTo, body.days());
+            if (newDateType == DateType.SHORT_LEAVE) {
+                // Same Short Leave rules; exclude this leave's own id so it
+                // doesn't count against itself.
+                LeaveRequest scratch = new LeaveRequest();
+                scratch.setEmployeeName(leave.getEmployeeName());
+                scratch.setFromDate(newFrom);
+                scratch.setToDate(newTo);
+                scratch.setHours(newHours);
+                scratch.setHalfSession(newHalfSession);
+                scratch.setDateType(DateType.SHORT_LEAVE);
+
+                ShortLeaveOutcome outcome = applyShortLeaveRules(scratch, leave.getId());
+                if (outcome.errorMessage() != null) {
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(outcome.errorMessage());
+                }
+                convertedToHalfDay = outcome.converted();
+                newDateType = scratch.getDateType();
+                newHours = scratch.getHours();
+                newHalfSession = scratch.getHalfSession();
+                newDays = scratch.getDays();
+            }
+
+            leave.setFromDate(newFrom);
+            leave.setToDate(newTo);
+            leave.setDateType(newDateType);
+            leave.setHalfSession(newHalfSession);
+            leave.setHours(newDateType == DateType.SHORT_LEAVE ? newHours : null);
+            leave.setDays(newDays);
+            if (body.leaveType() != null) leave.setLeaveType(body.leaveType());
+            if (!newReason.isEmpty()) leave.setReason(newReason);
+            // Status intentionally stays PENDING; any stale rejection note is cleared.
+            leave.setRejectionReason(null);
+
+            LeaveRequest saved = repo.save(leave);
+            notifyApproversOfLeave(saved, "updated their pending request:", "🗓️ Leave Request Updated");
+            String message = convertedToHalfDay
+                    ? "Heads up: this exceeded the 2-hour daily short-leave limit, so it was recorded as a Half Day leave instead."
                     : null;
             return ResponseEntity.ok(new LeaveSaveResponse(saved, convertedToHalfDay, message));
         }).orElse(ResponseEntity.notFound().build());
@@ -534,7 +814,19 @@ public class LeaveController {
         leave.setPendingDays(null);
     }
 
+    // The role is already on the authenticated principal (loaded once per
+    // request by JwtFilter), so there is no need to query the users table
+    // again. Falls back to a DB lookup if called for a different username.
     private String getUserRole(String username) {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && username != null && username.equals(auth.getName())) {
+            for (var a : auth.getAuthorities()) {
+                String name = a.getAuthority();
+                if (name != null && name.startsWith("ROLE_")) {
+                    return name.substring(5);
+                }
+            }
+        }
         return userRepo.findByUsername(username)
                 .map(u -> u.getRole() != null ? u.getRole() : "USER")
                 .orElse("USER");
@@ -568,8 +860,9 @@ public class LeaveController {
             return new ShortLeaveOutcome(false, "Please specify the number of hours (greater than 0) for short leave.");
         }
 
-        double existingForDay = sumShortLeaveHours(leave.getEmployeeName(), excludeId,
-                l -> leave.getFromDate().equals(l.getFromDate()));
+        long exclude = excludeId != null ? excludeId : -1L;
+        double existingForDay = nz(repo.sumShortLeaveHours(leave.getEmployeeName(), exclude,
+                leave.getFromDate(), leave.getFromDate()));
 
         if (requested > MAX_HOURS_PER_DAY || (existingForDay + requested) > MAX_HOURS_PER_DAY) {
             // Daily cap breached (either by this request alone, or combined
@@ -584,10 +877,9 @@ public class LeaveController {
             return new ShortLeaveOutcome(true, null);
         }
 
-        double existingForMonth = sumShortLeaveHours(leave.getEmployeeName(), excludeId,
-                l -> l.getFromDate() != null
-                        && l.getFromDate().getYear() == leave.getFromDate().getYear()
-                        && l.getFromDate().getMonthValue() == leave.getFromDate().getMonthValue());
+        java.time.YearMonth ym = java.time.YearMonth.from(leave.getFromDate());
+        double existingForMonth = nz(repo.sumShortLeaveHours(leave.getEmployeeName(), exclude,
+                ym.atDay(1), ym.atEndOfMonth()));
 
         if (existingForMonth + requested > MAX_HOURS_PER_MONTH) {
             double remaining = Math.max(0, MAX_HOURS_PER_MONTH - existingForMonth);
@@ -601,12 +893,7 @@ public class LeaveController {
         return new ShortLeaveOutcome(false, null);
     }
 
-    private double sumShortLeaveHours(String employeeName, Long excludeId, Predicate<LeaveRequest> matcher) {
-        return repo.findByEmployeeNameAndDateType(employeeName, DateType.SHORT_LEAVE).stream()
-                .filter(l -> l.getStatus() != Status.REJECTED)
-                .filter(l -> excludeId == null || !excludeId.equals(l.getId()))
-                .filter(matcher)
-                .mapToDouble(l -> l.getHours() != null ? l.getHours() : 0.0)
-                .sum();
+    private static double nz(Double v) {
+        return v != null ? v : 0.0;
     }
 }

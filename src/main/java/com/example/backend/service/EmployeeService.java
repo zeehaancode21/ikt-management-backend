@@ -28,6 +28,7 @@ import com.example.backend.repository.WorkReportRepository;
 public class EmployeeService {
 
     @Autowired private LeaveRequestRepository leaveRequestRepository;
+    @Autowired private com.example.backend.security.CustomUserDetailsService userDetailsCache;
     @Autowired private UserRepository userRepository;
     @Autowired private DocumentRepository documentRepository;
     @Autowired private FolderRepository folderRepository;
@@ -60,11 +61,7 @@ public class EmployeeService {
         // 3. Messages — clear ManyToMany join table first, then delete.
         //    JPQL DELETE bypasses cascade so we must detach attachments first
         //    or the FK rows in message_attachments will cause a constraint violation.
-        List<Message> userMessages = messageRepository
-                .findAll()
-                .stream()
-                .filter(m -> username.equals(m.getSenderUsername()) || username.equals(m.getReceiverUsername()))
-                .toList();
+        List<Message> userMessages = messageRepository.findAllByParticipant(username);
         for (Message m : userMessages) {
             m.getAttachments().clear();
         }
@@ -110,5 +107,6 @@ public class EmployeeService {
 
         // 9. Finally delete the user account
         userRepository.deleteById(employeeId);
+        userDetailsCache.evict(username);
     }
 }

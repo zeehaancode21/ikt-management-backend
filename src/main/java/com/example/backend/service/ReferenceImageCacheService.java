@@ -30,6 +30,8 @@ public class ReferenceImageCacheService {
 
     private static final long TTL_MILLIS = 10 * 60 * 1000L; // 10 minutes
     private static final long MAX_BYTES = 5 * 1024 * 1024L; // 5MB, matches frontend upload limit
+    // Total across all cached references (each may be up to 5 MB and lives for 10 minutes).
+    private static final long MAX_TOTAL_BYTES = 20 * 1024 * 1024L;
 
     @Value("${app.public-base-url:http://localhost:8080}")
     private String publicBaseUrl;
@@ -77,6 +79,8 @@ public class ReferenceImageCacheService {
             throw new IllegalArgumentException("Reference image must be smaller than 5MB");
         }
 
+        makeRoomFor(bytes.length);
+
         String token = UUID.randomUUID().toString();
         cache.put(token, new CachedRef(bytes, contentType, Instant.now().toEpochMilli() + TTL_MILLIS));
 
@@ -96,6 +100,31 @@ public class ReferenceImageCacheService {
     public String getContentType(String token) {
         CachedRef ref = getIfPresent(token);
         return ref == null ? null : ref.contentType();
+    }
+
+    /** Drops expired entries, then the oldest ones, until the new image fits under the total cap. */
+    private void makeRoomFor(int incomingBytes) {
+        long now = Instant.now().toEpochMilli();
+        cache.entrySet().removeIf(e -> e.getValue().expiresAtEpochMs() < now);
+
+        long total = 0;
+        for (CachedRef ref : cache.values()) {
+            total += ref.bytes().length;
+        }
+        while (total + incomingBytes > MAX_TOTAL_BYTES && !cache.isEmpty()) {
+            String oldestToken = null;
+            long oldestExpiry = Long.MAX_VALUE;
+            for (Map.Entry<String, CachedRef> e : cache.entrySet()) {
+                if (e.getValue().expiresAtEpochMs() < oldestExpiry) {
+                    oldestExpiry = e.getValue().expiresAtEpochMs();
+                    oldestToken = e.getKey();
+                }
+            }
+            if (oldestToken == null) break;
+            CachedRef removed = cache.remove(oldestToken);
+            if (removed != null) total -= removed.bytes().length;
+            log.warn("Reference image cache over its memory cap; dropped the oldest entry");
+        }
     }
 
     private CachedRef getIfPresent(String token) {

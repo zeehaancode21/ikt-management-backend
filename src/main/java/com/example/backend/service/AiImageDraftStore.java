@@ -26,7 +26,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 public class AiImageDraftStore {
 
-    private static final long TTL_MILLIS = 60 * 60 * 1000L; // 1 hour
+    private static final long TTL_MILLIS = 30 * 60 * 1000L; // 30 minutes
+
+    // Total size of all stored images (base64 text) across ALL drafts. Without a cap, every
+    // generated image sat in the heap for a full hour; on a 512 MB instance a burst of
+    // generations could exhaust memory. When exceeded, the oldest OTHER drafts are dropped.
+    private static final long MAX_TOTAL_CHARS = 32L * 1024 * 1024;
 
     public record GeneratedImageOption(int id, String base64, boolean selected) {
     }
@@ -44,6 +49,12 @@ public class AiImageDraftStore {
      * one was already made) and returns the options with selection flags applied.
      */
     public List<GeneratedImageOption> saveGenerated(String draftId, List<byte[]> images, String mimeType) {
+        // The replaced batch's ids used to stay in imageIdToDraftId forever (slow leak).
+        DraftState replaced = drafts.get(draftId);
+        if (replaced != null) {
+            replaced.options().forEach(o -> imageIdToDraftId.remove(o.id()));
+        }
+
         List<GeneratedImageOption> options = new ArrayList<>();
         for (byte[] image : images) {
             int id = idSequence.getAndIncrement();
@@ -55,7 +66,40 @@ public class AiImageDraftStore {
         DraftState previous = drafts.get(draftId);
         Integer previousSelection = previous == null ? null : previous.selectedImageId();
         drafts.put(draftId, new DraftState(options, previousSelection, expiryFromNow()));
+        enforceMemoryBudget(draftId);
         return applySelection(draftId);
+    }
+
+    /** Drops the oldest other drafts until the total stored image size is back under the cap. */
+    private void enforceMemoryBudget(String keepDraftId) {
+        long total = 0;
+        for (DraftState s : drafts.values()) {
+            total += sizeOf(s);
+        }
+        while (total > MAX_TOTAL_CHARS) {
+            String oldestId = null;
+            long oldestExpiry = Long.MAX_VALUE;
+            for (Map.Entry<String, DraftState> e : drafts.entrySet()) {
+                if (e.getKey().equals(keepDraftId)) continue; // never drop the draft being saved
+                if (e.getValue().expiresAtEpochMs() < oldestExpiry) {
+                    oldestExpiry = e.getValue().expiresAtEpochMs();
+                    oldestId = e.getKey();
+                }
+            }
+            if (oldestId == null) break; // only the current draft is left
+            DraftState victim = drafts.get(oldestId);
+            if (victim != null) total -= sizeOf(victim);
+            clear(oldestId);
+            log.warn("AI image draft store over its memory cap; dropped the oldest draft {}", oldestId);
+        }
+    }
+
+    private static long sizeOf(DraftState state) {
+        long n = 0;
+        for (GeneratedImageOption o : state.options()) {
+            n += o.base64() == null ? 0 : o.base64().length();
+        }
+        return n;
     }
 
     /** Returns the current options for a draft (empty list if none/expired). */

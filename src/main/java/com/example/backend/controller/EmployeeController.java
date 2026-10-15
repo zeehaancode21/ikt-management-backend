@@ -30,13 +30,16 @@ import java.util.stream.Collectors;
 @RequestMapping("/employees")
 public class EmployeeController {
 
-    private static final Set<String> ASSIGNABLE_ROLES = Set.of("USER", "LEAD");
+    private static final Set<String> ASSIGNABLE_ROLES = Set.of("USER", "LEAD", "MANAGER");
     private static final int ROLE_NAME_MAX_LENGTH = 100;
 
     private final UserRepository repo;
 
     @Autowired
     private EmployeeService employeeService;
+
+    @Autowired
+    private com.example.backend.security.CustomUserDetailsService userDetailsCache;
 
     @Autowired
     private EmployeeProfileRepository employeeProfileRepository;
@@ -66,9 +69,9 @@ public class EmployeeController {
         @GetMapping
     // @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
     public List<EmployeeResponseDto> getAll() {
-        List<User> users = repo.findAll();
+        List<UserRepository.EmployeeRow> users = repo.findAllEmployeeRows();
 
-        List<String> usernames = users.stream().map(User::getUsername).toList();
+        List<String> usernames = users.stream().map(UserRepository.EmployeeRow::getUsername).toList();
         Map<String, String> roleNamesByUsername = employeeProfileRepository
                 .findRoleNamesByUsernames(usernames)
                 .stream()
@@ -87,8 +90,7 @@ public class EmployeeController {
     }
 
     private EmployeeResponseDto toResponseDto(User user) {
-        String roleName = employeeProfileRepository.findByUsername(user.getUsername())
-                .map(EmployeeProfile::getRoleName)
+        String roleName = employeeProfileRepository.findRoleNameByUsername(user.getUsername()) // no picture load
                 .orElse(null);
         return new EmployeeResponseDto(user.getId(), user.getUsername(), user.getEmail(), user.getRole(), roleName);
     }
@@ -107,14 +109,12 @@ public class EmployeeController {
         if (request.role() != null && !request.role().isBlank()) {
             String normalizedRole = request.role().trim().toUpperCase();
             if (!ASSIGNABLE_ROLES.contains(normalizedRole)) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Role must be one of: USER, LEAD");
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Role must be one of: USER, LEAD, MANAGER");
             }
             user.setRole(normalizedRole);
             repo.save(user);
+            userDetailsCache.evict(user.getUsername()); // role changed -> drop cached login details
         }
-
-        EmployeeProfile profile = employeeProfileRepository.findByUsername(user.getUsername())
-                .orElseGet(EmployeeProfile::new);
 
         if (request.roleName() != null) {
             String trimmedRoleName = request.roleName().trim();
@@ -122,9 +122,18 @@ public class EmployeeController {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "Role name must be " + ROLE_NAME_MAX_LENGTH + " characters or fewer");
             }
-            profile.setUsername(user.getUsername());
-            profile.setRoleName(trimmedRoleName.isEmpty() ? null : trimmedRoleName);
-            employeeProfileRepository.save(profile);
+            String newRoleName = trimmedRoleName.isEmpty() ? null : trimmedRoleName;
+            // The old code loaded the whole profile (incl. picture) even when nothing changed,
+            // then re-saved it. Now only the role-name column is written.
+            if (employeeProfileRepository.existsByUsername(user.getUsername())) {
+                employeeProfileRepository.updateRoleName(user.getUsername(), newRoleName,
+                        java.time.LocalDateTime.now());
+            } else {
+                EmployeeProfile profile = new EmployeeProfile();
+                profile.setUsername(user.getUsername());
+                profile.setRoleName(newRoleName);
+                employeeProfileRepository.save(profile);
+            }
         }
 
         return toResponseDto(user);

@@ -165,11 +165,11 @@ public class ScheduledPostService {
 
     /**
      * Polls for due scheduled posts and runs them through the existing AI
-     * posting workflow. Runs every 30 seconds; each due job is claimed
+     * posting workflow. Runs every app.scheduledpost.poll-interval-ms (default 5 min); each due job is claimed
      * (moved to RUNNING) before generation starts so a slow run can't be
      * picked up twice by the next poll.
      */
-    @Scheduled(fixedDelay = 30000)
+    @Scheduled(fixedDelayString = "${app.scheduledpost.poll-interval-ms:300000}", initialDelayString = "${app.scheduledpost.poll-interval-ms:300000}")
     public void processDuePosts() {
         List<ScheduledPost> due = scheduledPostRepository
                 .findByStatusAndScheduledForLessThanEqual(ScheduledPostStatus.PENDING, LocalDateTime.now());
