@@ -1,6 +1,7 @@
 package com.example.backend.repository;
 
-import com.example.backend.entity.GroupMessage;
+import java.util.List;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -8,7 +9,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
+import com.example.backend.entity.GroupMessage;
 
 @Repository
 public interface GroupMessageRepository extends JpaRepository<GroupMessage, Long> {
@@ -25,9 +26,6 @@ public interface GroupMessageRepository extends JpaRepository<GroupMessage, Long
     @Transactional
     @Query("DELETE FROM GroupMessage gm WHERE gm.group.id = :groupId")
     void deleteAllByGroupId(@Param("groupId") Long groupId);
-
-    /** Batched lookup of old group messages for the retention cleanup job (see MessageRepository for why entities, not bulk DELETE). */
-    List<GroupMessage> findBySentAtBefore(java.time.LocalDateTime cutoff, org.springframework.data.domain.Pageable pageable);
 
     /**
      * Count messages in this group, newer than the given id, that weren't

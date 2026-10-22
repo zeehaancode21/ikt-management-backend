@@ -1,25 +1,20 @@
 package com.example.backend.controller;
 
-import com.example.backend.service.FcmService;
+import java.util.Map;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
+import com.example.backend.service.FcmService;
 
 @RestController
 @RequestMapping("/api/notifications")
-// @CrossOrigin(
-//     origins = "http://localhost:5173",
-//     allowCredentials = "true",
-//     allowedHeaders = "*",
-//     methods = {
-//         RequestMethod.GET, RequestMethod.POST,
-//         RequestMethod.PUT, RequestMethod.DELETE,
-//         RequestMethod.OPTIONS
-//     }
-// )
 public class FcmTokenController {
 
     private final FcmService fcmService;

@@ -96,10 +96,6 @@ public class Message {
     @Transient
     private Boolean replyToHasAttachment;
 
-    // Fires whenever this entity is loaded from the DB (findById, list/page
-    // queries, etc). If the query fetch-joined `replyTo`, this reads it with
-    // no extra query; if not, accessing it lazily still works inside a
-    // @Transactional method, just with one extra SELECT.
     @PostLoad
     public void populateReplyMeta() {
         if (replyTo != null) {

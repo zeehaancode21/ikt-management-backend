@@ -17,11 +17,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/notifications")
-// @CrossOrigin(
-//     origins = "http://localhost:5173",
-//     allowCredentials = "true",
-//     allowedHeaders = "*"
-// )
 public class NotificationController {
 
     private final NotificationRepository repo;

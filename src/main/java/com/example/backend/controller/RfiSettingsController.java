@@ -158,8 +158,7 @@ public class RfiSettingsController {
         if (email == null || email.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email is required");
         }
-        System.out.println("Getting saved TO contacts for user: " + userId);
-        log.info("Adding TO contact for user: {}, email: {}", userId, email);
+        log.debug("Adding TO contact for user: {}", userId);
         List<EmailContactDto> contacts = rfiSettingsService.addOrUpdateToContact(userId, email);
         return ResponseEntity.ok(contacts);
     }
@@ -182,7 +181,7 @@ public class RfiSettingsController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Favorite status is required");
         }
         
-        log.info("Setting TO contact favorite for user: {}, email: {}, favorite: {}", userId, email, favorite);
+        log.info("Setting TO contact favorite for user: {}, favorite: {}", userId, favorite);
         List<EmailContactDto> contacts = rfiSettingsService.setToContactFavorite(userId, email, favorite);
         return ResponseEntity.ok(contacts);
     }
@@ -198,7 +197,7 @@ public class RfiSettingsController {
         if (email == null || email.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email is required");
         }
-        log.info("Deleting TO contact for user: {}, email: {}", userId, email);
+        log.info("Deleting TO contact for user: {}", userId);
         List<EmailContactDto> contacts = rfiSettingsService.deleteToContact(userId, email);
         return ResponseEntity.ok(contacts);
     }
@@ -241,7 +240,7 @@ public class RfiSettingsController {
         if (email == null || email.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email is required");
         }
-        log.info("Adding CC contact for user: {}, email: {}", userId, email);
+        log.info("Adding CC contact for user: {}", userId);
         List<EmailContactDto> contacts = rfiSettingsService.addOrUpdateCcContact(userId, email);
         return ResponseEntity.ok(contacts);
     }
@@ -264,7 +263,7 @@ public class RfiSettingsController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Favorite status is required");
         }
         
-        log.info("Setting CC contact favorite for user: {}, email: {}, favorite: {}", userId, email, favorite);
+        log.info("Setting CC contact favorite for user: {}, favorite: {}", userId, favorite);
         List<EmailContactDto> contacts = rfiSettingsService.setCcContactFavorite(userId, email, favorite);
         return ResponseEntity.ok(contacts);
     }
@@ -280,7 +279,7 @@ public class RfiSettingsController {
         if (email == null || email.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email is required");
         }
-        log.info("Deleting CC contact for user: {}, email: {}", userId, email);
+        log.info("Deleting CC contact for user: {}", userId);
         List<EmailContactDto> contacts = rfiSettingsService.deleteCcContact(userId, email);
         return ResponseEntity.ok(contacts);
     }
@@ -328,8 +327,7 @@ public class RfiSettingsController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email is required");
         }
         RfiEmailAddressType addressType = parseAddressType(type);
-        System.out.println("Getting saved >>" + type + " contacts for user: " + userId);
-        log.info("Adding {} contact for user: {}, email: {}", type, userId, email);
+        log.debug("Adding {} contact for user: {}", type, userId);
         List<EmailContactDto> contacts = rfiSettingsService.addOrUpdateContact(userId, addressType, email);
         return ResponseEntity.ok(contacts);
     }
@@ -354,7 +352,7 @@ public class RfiSettingsController {
         }
         
         RfiEmailAddressType addressType = parseAddressType(type);
-        log.info("Setting {} contact favorite for user: {}, email: {}, favorite: {}", type, userId, email, favorite);
+        log.info("Setting {} contact favorite for user: {}, favorite: {}", type, userId, favorite);
         List<EmailContactDto> contacts = rfiSettingsService.setContactFavorite(userId, addressType, email, favorite);
         return ResponseEntity.ok(contacts);
     }
@@ -372,7 +370,7 @@ public class RfiSettingsController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email is required");
         }
         RfiEmailAddressType addressType = parseAddressType(type);
-        log.info("Deleting {} contact for user: {}, email: {}", type, userId, email);
+        log.info("Deleting {} contact for user: {}", type, userId);
         List<EmailContactDto> contacts = rfiSettingsService.deleteContact(userId, addressType, email);
         return ResponseEntity.ok(contacts);
     }

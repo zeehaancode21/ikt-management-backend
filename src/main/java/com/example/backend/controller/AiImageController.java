@@ -1,11 +1,14 @@
 package com.example.backend.controller;
 
-import com.example.backend.service.AiImageDraftStore;
-import com.example.backend.service.AiImageDraftStore.GeneratedImageOption;
-import com.example.backend.service.AiImageGenerationService.AiImageGenerationException;
-import com.example.backend.service.TemplateImageComposerService;
-import com.example.backend.service.TemplateImageComposerService.ImageCompositionException;
-import com.example.backend.service.TemplatedImageGenerationService;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,14 +16,23 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import com.example.backend.service.AiImageDraftStore;
+import com.example.backend.service.AiImageDraftStore.GeneratedImageOption;
+import com.example.backend.service.AiImageGenerationService.AiImageGenerationException;
+import com.example.backend.service.ReferenceImageCacheService;
+import com.example.backend.service.TemplateImageComposerService;
+import com.example.backend.service.TemplateImageComposerService.ImageCompositionException;
+import com.example.backend.service.TemplatedImageGenerationService;
 
 @RestController
 @RequestMapping("/social-post/ai-image")
@@ -30,6 +42,9 @@ public class AiImageController {
 
     @Autowired
     private AiImageDraftStore aiImageDraftStore;
+
+    @Autowired
+    private ReferenceImageCacheService referenceImageCacheService;
 
     @Autowired
     private TemplatedImageGenerationService templatedImageGenerationService;
@@ -335,25 +350,15 @@ public class AiImageController {
 
     @GetMapping("/reference-source/{token}")
     public ResponseEntity<byte[]> getReferenceImage(@PathVariable String token) {
-        try {
-            logger.info("Fetching reference image for token: {}", token);
-            Path path = Paths.get("./uploads/references/", token + ".png");
-
-            if (Files.exists(path)) {
-                byte[] imageData = Files.readAllBytes(path);
-                return ResponseEntity.ok()
-                    .header("Content-Type", "image/png")
-                    .header("Cache-Control", "public, max-age=3600")
-                    .body(imageData);
-            }
-
-            logger.warn("Reference image not found for token: {}", token);
+        byte[] data = referenceImageCacheService.getBytes(token);
+        if (data == null) {
             return ResponseEntity.notFound().build();
-
-        } catch (Exception e) {
-            logger.error("Failed to get reference image for token: {}", token, e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
+        String contentType = referenceImageCacheService.getContentType(token);
+        return ResponseEntity.ok()
+                .header("Content-Type", contentType != null ? contentType : "image/png")
+                .header("Cache-Control", "public, max-age=600")
+                .body(data);
     }
 
     // ===== HEALTH CHECK =====

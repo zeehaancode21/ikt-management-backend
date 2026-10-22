@@ -332,7 +332,7 @@ public class RfiSettingsService {
             
             settings.recordToContactUsage(normalized);
             rfiSettingsRepository.save(settings);
-            log.debug("Recorded TO contact usage for user: {}, email: {}", userId, normalized);
+            log.debug("Recorded TO contact usage for user: {}", userId);
         } catch (Exception e) {
             log.debug("Failed to record TO contact usage", e);
         }
@@ -357,7 +357,7 @@ public class RfiSettingsService {
             
             settings.recordCcContactUsage(normalized);
             rfiSettingsRepository.save(settings);
-            log.debug("Recorded CC contact usage for user: {}, email: {}", userId, normalized);
+            log.debug("Recorded CC contact usage for user: {}", userId);
         } catch (Exception e) {
             log.debug("Failed to record CC contact usage", e);
         }
@@ -387,7 +387,7 @@ public class RfiSettingsService {
         settings.addOrUpdateToContact(normalized, false);
         rfiSettingsRepository.save(settings);
         
-        log.info("Added TO contact for user: {}, email: {}", userId, normalized);
+        log.info("Added TO contact for user: {}", userId);
         return getAllToContacts(userId);
     }
     
@@ -403,7 +403,7 @@ public class RfiSettingsService {
         settings.addOrUpdateCcContact(normalized, false);
         rfiSettingsRepository.save(settings);
         
-        log.info("Added CC contact for user: {}, email: {}", userId, normalized);
+        log.info("Added CC contact for user: {}", userId);
         return getAllCcContacts(userId);
     }
     
@@ -431,7 +431,7 @@ public class RfiSettingsService {
         settings.setToContactFavorite(normalized, favorite);
         rfiSettingsRepository.save(settings);
         
-        log.info("Set TO contact favorite for user: {}, email: {}, favorite: {}", userId, normalized, favorite);
+        log.info("Set TO contact favorite for user: {}, favorite: {}", userId, favorite);
         return getAllToContacts(userId);
     }
     
@@ -447,7 +447,7 @@ public class RfiSettingsService {
         settings.setCcContactFavorite(normalized, favorite);
         rfiSettingsRepository.save(settings);
         
-        log.info("Set CC contact favorite for user: {}, email: {}, favorite: {}", userId, normalized, favorite);
+        log.info("Set CC contact favorite for user: {}, favorite: {}", userId, favorite);
         return getAllCcContacts(userId);
     }
     
@@ -475,7 +475,7 @@ public class RfiSettingsService {
         settings.removeToContact(normalized);
         rfiSettingsRepository.save(settings);
         
-        log.info("Deleted TO contact for user: {}, email: {}", userId, normalized);
+        log.info("Deleted TO contact for user: {}", userId);
         return getAllToContacts(userId);
     }
     
@@ -491,7 +491,7 @@ public class RfiSettingsService {
         settings.removeCcContact(normalized);
         rfiSettingsRepository.save(settings);
         
-        log.info("Deleted CC contact for user: {}, email: {}", userId, normalized);
+        log.info("Deleted CC contact for user: {}", userId);
         return getAllCcContacts(userId);
     }
     

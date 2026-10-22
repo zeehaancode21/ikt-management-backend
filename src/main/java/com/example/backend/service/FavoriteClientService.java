@@ -1,14 +1,14 @@
 package com.example.backend.service;
 
-import com.example.backend.entity.FavoriteClient;
-import com.example.backend.repository.FavoriteClientRepository;
+import java.util.List;
+import java.util.stream.Collectors;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Comparator;
-import java.util.List;
-import java.util.stream.Collectors;
+import com.example.backend.entity.FavoriteClient;
+import com.example.backend.repository.FavoriteClientRepository;
 
 @Service
 public class FavoriteClientService {

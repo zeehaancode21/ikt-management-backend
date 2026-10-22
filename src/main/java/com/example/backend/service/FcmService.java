@@ -1,5 +1,6 @@
 package com.example.backend.service;
 
+import lombok.extern.slf4j.Slf4j;
 import com.google.firebase.messaging.*;
 import com.example.backend.entity.FcmToken;
 import com.example.backend.repository.FcmTokenRepository;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.Optional;
 
 @Service
+@Slf4j
 public class FcmService {
 
     private final FcmTokenRepository fcmTokenRepository;
@@ -226,7 +228,7 @@ public class FcmService {
                 e.getMessagingErrorCode() == MessagingErrorCode.INVALID_ARGUMENT) {
                 fcmTokenCleaner.removeInvalidToken(token);
             } else {
-                System.err.println("❌ FCM send error: " + e.getMessage());
+                log.warn("FCM send error: {}", e.getMessage());
             }
         }
     }

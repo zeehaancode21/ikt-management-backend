@@ -32,15 +32,6 @@ public interface PermissionRequestRepository extends JpaRepository<PermissionReq
     @Query("SELECT p FROM PermissionRequest p WHERE p.employeeName = :employeeName AND p.status <> com.example.backend.entity.Status.REJECTED")
     List<PermissionRequest> findActiveByEmployeeName(@Param("employeeName") String employeeName);
 
-    // Used by PermissionSurplusService to compute the cumulative *approved*
-    // permission hours for a calendar month — the figure that drives the
-    // Half-Day/Full-Day Permission auto-classification. Only APPROVED
-    // requests count; PENDING, REAPPROVAL_PENDING, and REJECTED requests are
-    // excluded on purpose so an employee's Leave-portal entry never reflects
-    // hours a manager hasn't actually signed off on yet.
-    @Query("SELECT p FROM PermissionRequest p WHERE p.employeeName = :employeeName AND p.status = com.example.backend.entity.Status.APPROVED")
-    List<PermissionRequest> findApprovedByEmployeeName(@Param("employeeName") String employeeName);
-
     // ── Aggregated projections ──────────────────────────────────────────
     // The two queries below back the all-employees quota summary
     // (GET /permissions/summary). Instead of looping over every employee

@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import lombok.extern.slf4j.Slf4j;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
@@ -43,6 +44,7 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 @RestController
 @RequestMapping("/leaves")
+@Slf4j
 public class LeaveController {
 
     // ── Short Leave quota rules ─────────────────────────────────────────
@@ -109,7 +111,7 @@ public class LeaveController {
         try {
             fcmService.sendNotificationToUser(targetUsername, senderUsername, fcmTitle, fcmBody, null);
         } catch (Exception e) {
-            System.err.println("Failed to send FCM leave notification: " + e.getMessage());
+            log.warn("Failed to send FCM leave notification: {}", e.getMessage());
         }
     }
 
@@ -121,7 +123,7 @@ public class LeaveController {
             try {
                 task.run();
             } catch (Exception e) {
-                System.err.println("Leave notification failed: " + e.getMessage());
+                log.warn("Leave notification failed: {}", e.getMessage());
             }
         };
         try {

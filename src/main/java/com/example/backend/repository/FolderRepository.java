@@ -23,8 +23,6 @@ public interface FolderRepository extends JpaRepository<Folder, Long> {
     /** Root-level duplicate check (parentId IS NULL). */
     boolean existsByNameAndCreatedByAndParentIsNull(String name, String createdBy);
 
-    boolean existsByName(String name);
-
     @Modifying
     @Transactional
     void deleteByCreatedBy(String username);

@@ -15,17 +15,7 @@ import com.example.backend.entity.User;
 public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findByUsername(String username);
 
-    // Used to resolve a CC'd RFI address back to an internal employee
-    // account, so that employee can get an in-app/push notification for
-    // RFI updates (see RfiCcNotificationService) in addition to the email.
-    Optional<User> findByEmailIgnoreCase(String email);
-
-        // Tolerates duplicate emails (findBy... would throw if two users share an email)
     Optional<User> findFirstByEmailIgnoreCase(String email);
-
-    // ------------------------------------------------------------------
-    // RFI module access (one boolean column on users - see User.rfiAccess)
-    // ------------------------------------------------------------------
 
     /** Ids of every user who has been granted RFI module access. */
     @Query("SELECT u.id FROM User u WHERE u.rfiAccess = true")
@@ -41,12 +31,6 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query("UPDATE User u SET u.rfiAccess = :allowed WHERE u.id = :id")
     int setRfiAccess(@Param("id") Long id, @Param("allowed") boolean allowed);
 
-    // ------------------------------------------------------------------
-    // Combined module access (RFI + Projects) - see ModuleAccessController
-    // Both flags are columns on the users row; one query answers both.
-    // ------------------------------------------------------------------
-
-    /** Both flags of one login in a single query (nulls = no access). */
     interface ModuleAccessRow {
         Boolean getRfi();
         Boolean getProjects();
@@ -72,10 +56,6 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query("UPDATE User u SET u.projectsAccess = :allowed WHERE u.id = :id")
     int setProjectsAccess(@Param("id") Long id, @Param("allowed") boolean allowed);
 
-    // @Query("SELECT u.username FROM User u WHERE u.role = :role")
-    // List<String> findAllEmployeeNames(@Param("role") String role);
-
-    /** Every username, without loading full User rows. */
     @Query("SELECT u.username FROM User u")
     List<String> findAllUsernames();
 
@@ -93,14 +73,6 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query("SELECT u.username FROM User u WHERE u.role IN :roles")
     List<String> findUsernamesByRoles(@Param("roles") List<String> roles);
 
-    // ------------------------------------------------------------------
-    // Notepad — stored as two extra columns on the users row
-    // (note_content, note_updated_at). They are deliberately NOT mapped on
-    // the User entity, so ordinary user lookups (login, JWT filter, employee
-    // lists) never read the note text and it can never leak into a User JSON.
-    // ------------------------------------------------------------------
-
-    /** Read-only view of the note columns. */
     interface NoteRow {
         String getContent();
         Timestamp getUpdatedAt();
@@ -125,13 +97,6 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query(value = "UPDATE users SET note_content = NULL, note_updated_at = NULL "
             + "WHERE username = :username", nativeQuery = true)
     int clearNote(@Param("username") String username);
-
-    // ------------------------------------------------------------------
-    // Task list — one more nullable TEXT column on the same users row
-    // (task_content = compact JSON array). Same approach as the notepad:
-    // not mapped on the User entity, no extra table, NULL when empty.
-    // Needs: ALTER TABLE users ADD COLUMN task_content TEXT NULL;
-    // ------------------------------------------------------------------
 
     @Query(value = "SELECT task_content FROM users WHERE username = :username LIMIT 1", nativeQuery = true)
     Optional<String> findTasksByUsername(@Param("username") String username);

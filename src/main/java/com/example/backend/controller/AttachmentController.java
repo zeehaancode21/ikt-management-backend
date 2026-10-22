@@ -20,11 +20,6 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/attachments")
-// @CrossOrigin(
-//     origins = "http://localhost:5173",
-//     allowCredentials = "true",
-//     allowedHeaders = "*"
-// )
 public class AttachmentController {
 
     @Autowired

@@ -5,7 +5,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
 import org.springframework.web.servlet.config.annotation.ContentNegotiationConfigurer;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
-import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import com.example.backend.repository.UserRepository;
@@ -42,7 +41,11 @@ public class WebConfig implements WebMvcConfigurer {
                 .addPathPatterns(
                         "/api/project-status/*/rfis",
                         "/api/project-status/*/rfis/**",
-                        "/api/rfi-settings/**");
+                        "/api/rfi-settings/**",
+                        // Client share links for RFIs (create / list / revoke). The PUBLIC
+                        // read endpoint is /public/share/rfi/** and is intentionally not gated.
+                        "/api/rfi-share-links",
+                        "/api/rfi-share-links/**");
 
         // 1b) Projects module gate: only the OWNER and users the owner ticked "Projects" for in
         //     Admin Console -> Access Control may change projects or touch change orders.
@@ -68,16 +71,5 @@ public class WebConfig implements WebMvcConfigurer {
                         "/api/project-status/*/rfis/*/reply",
                         "/api/project-status/*/rfis/*/resubmit",
                         "/api/project-status/*/rfis/*/reopen");
-    }
-
-    @Override
-    public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        registry.addResourceHandler("/uploads/**")
-            .addResourceLocations("file:./uploads/")
-            .setCachePeriod(3600);
-        
-        registry.addResourceHandler("/uploads/ai-generated/**")
-            .addResourceLocations("file:./uploads/ai-generated/")
-            .setCachePeriod(3600);
     }
 }

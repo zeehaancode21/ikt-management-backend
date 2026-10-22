@@ -1,6 +1,8 @@
 package com.example.backend.config;
 
-import com.example.backend.security.JwtUtil;
+import java.security.Principal;
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -10,8 +12,7 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
-import java.security.Principal;
-import java.util.List;
+import com.example.backend.security.JwtUtil;
 
 @Component
 public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {

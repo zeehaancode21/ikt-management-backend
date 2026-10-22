@@ -1,13 +1,15 @@
 package com.example.backend.security;
 
+import java.util.Date;
+
+import javax.crypto.SecretKey;
+
+import org.springframework.stereotype.Component;
+
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
-import org.springframework.stereotype.Component;
-
-import javax.crypto.SecretKey;
-import java.util.Date;
 
 /**
  * The "vault token" is a second, short-lived credential issued only after a

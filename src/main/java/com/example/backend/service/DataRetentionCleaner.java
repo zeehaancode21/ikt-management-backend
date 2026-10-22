@@ -1,17 +1,5 @@
 package com.example.backend.service;
 
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
-
-import org.hibernate.Session;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
-
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.time.Duration;
@@ -25,6 +13,18 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
+
+import org.hibernate.Session;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 
 /**
  * Deletes messages, group messages and notifications older than a configured retention
@@ -248,7 +248,7 @@ public class DataRetentionCleaner {
             }
         } catch (Exception e) {
             log.error("Data retention: stopped deleting {} after {} rows because of an error: {}. "
-                    + "(If it mentions reply_to_id, deploy once with APP_MAINTENANCE_FIX_REPLY_FK=true.)",
+                    + "(If it mentions reply_to_id, the reply_to_id foreign keys on messages/group_messages need ON DELETE SET NULL - see OPTIMIZATION_NOTES.md.)",
                     t.label(), total, e.toString());
         }
         return total;

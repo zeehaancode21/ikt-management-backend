@@ -97,9 +97,7 @@ public class EmployeeService {
         attachmentRepository.deleteAllByUploadedBy(username);
 
         // 8. Delete employee profile and bank details
-        // Find and delete profile by username
-        employeeProfileRepository.findByUsername(username)
-                .ifPresent(profile -> employeeProfileRepository.delete(profile));
+        employeeProfileRepository.deleteByUsername(username);
         
         // Find and delete bank details by username
         employeeBankDetailRepository.findByEmployeeUsername(username)

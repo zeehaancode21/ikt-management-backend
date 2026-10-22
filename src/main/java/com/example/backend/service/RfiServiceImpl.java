@@ -108,6 +108,11 @@ public class RfiServiceImpl implements RfiService {
     @Autowired
     private RfiStatusTransitionService rfiStatusTransitionService;
 
+    // Keeps the public client share pages live: told whenever an RFI is created or its
+    // priority changes (status changes are announced from RfiStatusTransitionService).
+    @Autowired
+    private PublicRfiShareService publicRfiShareService;
+
     /**
      * Refresh token + Gmail address/name + OAuth Client ID/Secret for
      * whichever account an email should actually send from — ALL of it
@@ -214,6 +219,7 @@ public class RfiServiceImpl implements RfiService {
         }
         rfi.setPriority(priority);
         Rfi saved = rfiRepository.save(rfi);
+        publicRfiShareService.evictProjectAfterCommit(saved.getProjectName());
         log.info("RFI {} priority changed {} -> {} by {}", saved.getRfiNumber(), previous, priority, changedBy);
         return saved;
     }
@@ -495,6 +501,9 @@ public class RfiServiceImpl implements RfiService {
                 log.warn("Failed to send notifications for RFI {}: {}", rfiNumber, e.getMessage());
             }
         };
+
+        // A new RFI should show up on any client page that lists this project's RFIs.
+        publicRfiShareService.evictProjectAfterCommit(projectName);
 
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {

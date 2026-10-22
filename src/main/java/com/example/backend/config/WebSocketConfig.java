@@ -1,7 +1,8 @@
 package com.example.backend.config;
 
-import com.example.backend.security.JwtUtil;
-import io.jsonwebtoken.ExpiredJwtException;
+import java.security.Principal;
+import java.util.Map;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.server.ServerHttpRequest;
@@ -15,8 +16,9 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 import org.springframework.web.socket.server.HandshakeInterceptor;
 import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
 
-import java.security.Principal;
-import java.util.Map;
+import com.example.backend.security.JwtUtil;
+
+import io.jsonwebtoken.ExpiredJwtException;
 
 @Configuration
 @EnableWebSocketMessageBroker

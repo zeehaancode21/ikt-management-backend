@@ -46,6 +46,11 @@ public interface EmployeeProfileRepository extends JpaRepository<EmployeeProfile
 
     boolean existsByUsername(String username);
 
+    @Modifying
+    @Transactional
+    @Query("delete from EmployeeProfile e where e.username = :username")
+    int deleteByUsername(@Param("username") String username);
+
     // ── Writes that never load or rewrite the profile picture (up to 5 MB) ──────────────
     // updatedAt is set here because JPQL updates skip the entity's @PreUpdate callback.
 

@@ -2,47 +2,11 @@
 
 // import java.util.List;
 
-// import org.springframework.data.jpa.repository.JpaRepository;
-// import org.springframework.data.jpa.repository.Query;
-// import org.springframework.data.repository.query.Param;
-// import org.springframework.stereotype.Repository;
-
-// import com.example.backend.entity.Rfi;
-// import com.example.backend.entity.RfiDiscipline;
-// import com.example.backend.entity.RfiTeamType;
-
 // @Repository
 // public interface RfiRepository extends JpaRepository<Rfi, Long> {
 
 //     List<Rfi> findByProjectNameOrderByIdAsc(String projectName);
 
-//     /** Null teamType/discipline means "don't filter on that field" — backs the ALL option in both filters. */
-//     @Query("SELECT r FROM Rfi r WHERE r.projectName = :projectName " +
-//            "AND (:teamType IS NULL OR r.teamType = :teamType) " +
-//            "AND (:discipline IS NULL OR r.discipline = :discipline) " +
-//            "ORDER BY r.id DESC")
-//     List<Rfi> findByProjectNameWithFilters(
-//         @Param("projectName") String projectName,
-//         @Param("teamType") RfiTeamType teamType,
-//         @Param("discipline") RfiDiscipline discipline
-//     );
-
-//     /**
-//      * Counts the number of RFIs for a given project.
-//      * Used to generate the next sequential RFI number.
-//      */
-//     long countByProjectName(String projectName);
-
-//     /**
-//      * Finds RFIs by project name, team type, and discipline.
-//      * This is an alternative to findByProjectNameWithFilters that requires exact matches.
-//      */
-//     List<Rfi> findByProjectNameAndTeamTypeAndDiscipline(
-//         String projectName,
-//         RfiTeamType teamType,
-//         RfiDiscipline discipline
-//     );
-// }
 package com.example.backend.repository;
 
 import java.util.Collection;
@@ -88,17 +52,6 @@ public interface RfiRepository extends JpaRepository<Rfi, Long> {
      * Used to generate the next sequential RFI number.
      */
     long countByProjectName(String projectName);
-
-    /**
-     * Finds RFIs by project name, team type, and discipline.
-     * This is an alternative to findByProjectNameWithFilters that requires exact matches.
-     */
-    @EntityGraph(attributePaths = "attachment")
-    List<Rfi> findByProjectNameAndTeamTypeAndDiscipline(
-        String projectName,
-        RfiTeamType teamType,
-        RfiDiscipline discipline
-    );
 
     // ------------------------------------------------------------------
     // Auto reply check — tiny projections only (no attachment join, no

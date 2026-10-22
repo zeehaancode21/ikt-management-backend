@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import lombok.extern.slf4j.Slf4j;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.YearMonth;
@@ -39,6 +40,7 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 @RestController
 @RequestMapping("/permissions")
+@Slf4j
 public class PermissionController {
 
     // ── Permission quota rules ──────────────────────────────────────────
@@ -122,7 +124,7 @@ public class PermissionController {
         try {
             fcmService.sendNotificationToUser(targetUsername, senderUsername, fcmTitle, fcmBody, null);
         } catch (Exception e) {
-            System.err.println("Failed to send FCM permission notification: " + e.getMessage());
+            log.warn("Failed to send FCM permission notification: {}", e.getMessage());
         }
     }
 
@@ -271,29 +273,7 @@ public class PermissionController {
     public ResponseEntity<?> save(@RequestBody PermissionRequestBody body) {
         String username = currentUsername();
 
-        // if (body.date() == null) {
-        //     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("A date is required.");
-        // }
-        // if (body.startTime() == null || body.endTime() == null) {
-        //     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Both a start and end time are required.");
-        // }
-        // if (body.reason() == null || body.reason().trim().length() < 10) {
-        //     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Please provide a reason of at least 10 characters.");
-        // }
-
         double hours = computeHours(body.startTime(), body.endTime());
-        // if (hours <= 0) {
-        //     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("End time must be after start time.");
-        // }
-        // if (hours > MAX_HOURS_PER_DAY) {
-        //     return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-        //             .body("Permission is capped at " + formatHours(MAX_HOURS_PER_DAY) + " hours a day.");
-        // }
-
-        // String quotaError = checkQuota(username, body.date(), hours, null);
-        // if (quotaError != null) {
-        //     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(quotaError);
-        // }
 
         PermissionRequest p = new PermissionRequest();
         p.setEmployeeName(username);
@@ -470,7 +450,7 @@ public class PermissionController {
         }
 
           final String rejectionReason = (status == Status.REJECTED) ? cleanReason(body) : null;
-        System.out.println("[PERMISSION-REJECT] id=" + id + " status=" + status + " body=" + body + " reason=" + rejectionReason);
+        log.debug("Permission decision id={} status={}", id, status);
         repo.findById(id).ifPresent(p -> {
             LocalDate originalDate = p.getDate();
             boolean wasReapproval = p.getStatus() == Status.REAPPROVAL_PENDING;
@@ -495,7 +475,7 @@ public class PermissionController {
                 p.setRejectionReason(status == Status.REJECTED ? rejectionReason : null);
             }
             PermissionRequest saved = repo.save(p);
-            System.out.println("[PERMISSION-REJECT] saved id=" + saved.getId() + " status=" + saved.getStatus() + " rejectionReason=" + saved.getRejectionReason());
+            log.debug("Permission decision saved id={} status={}", saved.getId(), saved.getStatus());
             notifyEmployeeOfDecision(saved, status, rejectionReason);
 
             // Rejecting a plain request removes hours from the month's

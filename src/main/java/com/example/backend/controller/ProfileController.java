@@ -29,11 +29,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/profile")
-// @CrossOrigin(
-//     origins = "http://localhost:5173",
-//     allowCredentials = "true",
-//     allowedHeaders = "*"
-// )
 public class ProfileController {
 
     private static final Logger log = LoggerFactory.getLogger(ProfileController.class);

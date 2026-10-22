@@ -33,8 +33,6 @@ public interface ProjectStatusRepository extends JpaRepository<ProjectStatus, Lo
 
     boolean existsByProjectName(String projectName);
 
-    void deleteByJobNumber(String jobNumber);
-
     @Query("SELECT DISTINCT p.client FROM ProjectStatus p")
     List<String> getAllClients();
 

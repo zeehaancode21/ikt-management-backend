@@ -1,11 +1,12 @@
 package com.example.backend.repository;
 
-import com.example.backend.entity.WeekendAttendance;
-import org.springframework.data.jpa.repository.JpaRepository;
-
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import com.example.backend.entity.WeekendAttendance;
 
 public interface WeekendAttendanceRepository extends JpaRepository<WeekendAttendance, Long> {
 
@@ -19,6 +20,4 @@ public interface WeekendAttendanceRepository extends JpaRepository<WeekendAttend
     List<WeekendAttendance> findByDateBetweenOrderByDateDesc(LocalDate start, LocalDate end);
 
     List<WeekendAttendance> findAllByOrderByDateDesc();
-
-    long countByEmployeeNameAndDateBetween(String employeeName, LocalDate start, LocalDate end);
 }

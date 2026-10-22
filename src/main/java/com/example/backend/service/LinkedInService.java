@@ -1,5 +1,6 @@
 package com.example.backend.service;
 
+import lombok.extern.slf4j.Slf4j;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -9,11 +10,10 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.http.*;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 
 @Service
+@Slf4j
 public class LinkedInService {
 
     @Value("${linkedin.access.token:}")
@@ -287,28 +287,10 @@ public class LinkedInService {
     }
 
     /**
-     * Log post activity
+     * Log post activity. Only status and topic are logged; post content and the
+     * provider response body are deliberately NOT written anywhere.
      */
     private void logPost(String content, String topic, int statusCode, String responseBody) {
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-        String logEntry = String.format(
-            "[%s] Status: %d | Topic: %s | Response: %s | Content preview: %s\n",
-            timestamp,
-            statusCode,
-            topic,
-            responseBody != null ? responseBody.substring(0, Math.min(responseBody.length(), 200)) : "null",
-            content.substring(0, Math.min(content.length(), 100))
-        );
-        
-        try {
-            java.nio.file.Files.write(
-                java.nio.file.Path.of("linkedin_post_log.txt"),
-                logEntry.getBytes(),
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.APPEND
-            );
-        } catch (Exception e) {
-            System.err.println("Failed to write log: " + e.getMessage());
-        }
+        log.info("LinkedIn post attempt: status={} topic={}", statusCode, topic);
     }
 }

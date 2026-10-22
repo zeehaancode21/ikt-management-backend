@@ -32,16 +32,6 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/folders")
 @RequiredArgsConstructor
-// @CrossOrigin(
-//     origins = {"http://localhost:5173", "http://localhost:3000"},
-//     allowCredentials = "true",
-//     allowedHeaders = "*",
-//     methods = {
-//         RequestMethod.GET, RequestMethod.POST,
-//         RequestMethod.PUT, RequestMethod.DELETE,
-//         RequestMethod.OPTIONS
-//     }
-// )
 public class FolderController {
 
     private final FolderRepository folderRepo;

@@ -1,10 +1,26 @@
 package com.example.backend.entity;
 
-import jakarta.persistence.*;
-import lombok.*;
+import java.time.LocalDateTime;
+
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
-import java.time.LocalDateTime;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Lob;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 /**
  * One row per (employee, document type). The file bytes stored in
@@ -38,6 +54,8 @@ public class EmployeeDocument {
     private Long fileSize;
 
     // Ciphertext only: [12-byte IV][GCM ciphertext+tag]. Never store plaintext.
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
     @Lob
     @Column(name = "encrypted_file_data", columnDefinition = "LONGBLOB")
     @JsonIgnore

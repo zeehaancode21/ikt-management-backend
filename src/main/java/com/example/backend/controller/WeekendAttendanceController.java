@@ -19,7 +19,6 @@ import java.time.YearMonth;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
-import org.springframework.beans.factory.annotation.Value;
 
 /**
  * Weekend Attendance — employees may only check in/out on Saturdays and
@@ -68,14 +67,6 @@ public class WeekendAttendanceController {
         DayOfWeek dow = date.getDayOfWeek();
         return dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY;
     }
-
-    // private boolean isWeekend(LocalDate date) {
-    //     if (bypassWeekendCheck) {
-    //         return true;
-    //     }
-    //     DayOfWeek dow = date.getDayOfWeek();
-    //     return dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY;
-    // }
 
     private static double roundToTwoDecimals(double value) {
         return Math.round(value * 100.0) / 100.0;

@@ -34,7 +34,6 @@ public class JwtFilter extends OncePerRequestFilter {
         return path != null && (
             path.startsWith("/health") ||
             path.startsWith("/auth/login") ||
-            path.startsWith("/auth/register") ||
             path.startsWith("/ws") ||
             path.startsWith("/topic") ||
             path.startsWith("/app") ||

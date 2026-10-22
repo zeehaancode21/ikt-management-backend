@@ -46,10 +46,6 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ex.getMessage()));
     }
 
-    // The client disconnected (browser navigated away / cancelled a request,
-    // most often mid-download of a streamed image). The connection is gone,
-    // so there's no one to send a response to — don't try. This is the
-    // ClientAbortException itself (thrown directly by Tomcat).
     @ExceptionHandler(ClientAbortException.class)
     @ResponseStatus(HttpStatus.OK) // Don't return error for client disconnects
     public void handleClientAbort(ClientAbortException e) {

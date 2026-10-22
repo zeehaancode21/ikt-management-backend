@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import lombok.extern.slf4j.Slf4j;
 import com.example.backend.entity.Attachment;
 import com.example.backend.entity.Group;
 import com.example.backend.service.FcmService;
@@ -25,16 +26,7 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/groups")
 @RequiredArgsConstructor
-// @CrossOrigin(
-//     origins = "http://localhost:5173",
-//     allowCredentials = "true",
-//     allowedHeaders = "*",
-//     methods = {
-//         RequestMethod.GET, RequestMethod.POST,
-//         RequestMethod.PUT, RequestMethod.DELETE,
-//         RequestMethod.OPTIONS
-//     }
-// )
+@Slf4j
 public class GroupController {
 
     private final GroupRepository groupRepo;
@@ -306,7 +298,7 @@ public class GroupController {
                 }
             } catch (Exception e) {
                 // Log error but don't fail message delivery
-                System.err.println("Failed to send FCM notifications: " + e.getMessage());
+                log.warn("Failed to send FCM notifications: {}", e.getMessage());
             }
             // ─── End FCM Push Notifications ───────────────────────────────────
             

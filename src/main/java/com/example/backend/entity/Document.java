@@ -2,6 +2,8 @@ package com.example.backend.entity;
 
 import java.time.LocalDateTime;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -15,10 +17,9 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import lombok.ToString;
-import lombok.EqualsAndHashCode;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 
 @Entity
 @Table(name = "documents")
@@ -36,6 +37,8 @@ public class Document {
     private String fileType;
     private Long fileSize;
 
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
     @Lob
     @Column(columnDefinition = "LONGBLOB")
     private byte[] fileData;

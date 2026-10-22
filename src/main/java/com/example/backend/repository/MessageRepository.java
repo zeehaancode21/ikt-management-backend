@@ -1,16 +1,16 @@
 package com.example.backend.repository;
 
-import com.example.backend.entity.Message;
+import java.util.List;
+
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
+import com.example.backend.entity.Message;
 
 public interface MessageRepository extends JpaRepository<Message, Long> {
 
@@ -64,13 +64,4 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
        "(m.senderUsername = :user1 AND m.receiverUsername = :user2) OR " +
        "(m.senderUsername = :user2 AND m.receiverUsername = :user1)")
     Page<Message> findConversationPage(@Param("user1") String user1, @Param("user2") String user2, Pageable pageable);
-
-    /**
-     * Batched lookup of old messages for the retention cleanup job.
-     * Deliberately returns entities (not a bulk DELETE) so Hibernate removes
-     * the message_attachments join-table rows correctly before the message
-     * itself is deleted — a raw "DELETE FROM Message WHERE sentAt < ?" would
-     * skip that and could violate the join table's foreign key.
-     */
-    List<Message> findBySentAtBefore(java.time.LocalDateTime cutoff, Pageable pageable);
 }

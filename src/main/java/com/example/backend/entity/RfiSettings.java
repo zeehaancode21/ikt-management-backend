@@ -219,7 +219,7 @@ public class RfiSettings {
                     new TypeReference<List<EmailContactData>>() {});
             return new HashSet<>(list);
         } catch (Exception e) {
-            log.error("Failed to deserialize email contacts JSON: {}", json, e);
+            log.error("Failed to deserialize email contacts JSON", e);
             return new HashSet<>();
         }
     }

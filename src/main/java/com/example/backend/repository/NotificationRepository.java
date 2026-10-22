@@ -56,22 +56,6 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
     @Query("DELETE FROM Notification n WHERE n.targetUsername = :username")
     int deleteAllNotificationsForUser(@Param("username") String username);
 
-    /**
-     * Batched lookup of old notifications for the retention cleanup job (see
-     * MessageRepository for why entities, not bulk DELETE).
-     */
-    List<Notification> findByCreatedAtBefore(java.time.Instant cutoff, org.springframework.data.domain.Pageable pageable);
-
-    @Modifying
-    @Transactional
-    @Query("UPDATE Notification n SET n.read = true WHERE n.id = :id AND n.targetUsername = :username")
-    int markReadForUser(@Param("id") Long id, @Param("username") String username);
-
-    @Modifying
-    @Transactional
-    @Query("UPDATE Notification n SET n.read = true WHERE n.targetUsername = :username AND n.read = false")
-    int markAllReadForUser(@Param("username") String username);
-
     /** Delete a single notification for a user (ownership-checked in the query itself) */
 @Modifying
 @Transactional

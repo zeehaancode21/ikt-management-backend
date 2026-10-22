@@ -1,19 +1,14 @@
 package com.example.backend.entity;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
-
 import java.time.LocalDateTime;
 
-import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+import com.fasterxml.jackson.annotation.JsonFormat;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EntityListeners;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.PrePersist;
-import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -85,13 +80,4 @@ public class ProjectStatus {
     @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss'Z'")
     private LocalDateTime updatedAt;
 
-    // @PrePersist
-    // protected void onCreate() {
-    //     this.createdAt = LocalDateTime.now();
-    //     this.updatedAt = LocalDateTime.now();
-    // }
-    // @PreUpdate
-    // protected void onUpdate() {
-    //     this.updatedAt = LocalDateTime.now();
-    // }
 }

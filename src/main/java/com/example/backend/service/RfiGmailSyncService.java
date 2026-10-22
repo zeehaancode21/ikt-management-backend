@@ -23,12 +23,10 @@ import com.example.backend.entity.RfiEmailDirection;
 import com.example.backend.entity.RfiEmailMessage;
 import com.example.backend.entity.RfiParticipantRole;
 import com.example.backend.entity.RfiStatus;
-import com.example.backend.entity.UnmatchedEmail;
 import com.example.backend.entity.User;
 import com.example.backend.repository.RfiEmailMessageRepository;
 import com.example.backend.repository.RfiRepository;
 import com.example.backend.repository.RfiStatusHistoryRepository;
-import com.example.backend.repository.UnmatchedEmailRepository;
 import com.example.backend.repository.UserRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -46,8 +44,8 @@ import lombok.extern.slf4j.Slf4j;
  *   2. For legacy RFIs sent before this feature existed (gmailThreadId is
  *      null), a one-time subject search backfills it — see
  *      backfillThreadIdIfMissing. If that search is ambiguous (matches more
- *      than one thread), nothing is guessed: it's logged to UnmatchedEmail
- *      for manual review instead.
+ *      than one thread), nothing is guessed: it's skipped (a warning is
+ *      logged) and that RFI is left without a thread id.
  *
  * Duplicate prevention: RfiEmailMessage.gmailMessageId has a unique index;
  * this service also checks existsByGmailMessageId before inserting so a
@@ -69,9 +67,6 @@ public class RfiGmailSyncService {
 
     @Autowired
     private RfiStatusHistoryRepository statusHistoryRepository;
-
-    @Autowired
-    private UnmatchedEmailRepository unmatchedEmailRepository;
 
     @Autowired
     private GmailEmailService emailService;
@@ -354,7 +349,7 @@ public class RfiGmailSyncService {
                         rfiSettingsService.markTokenAsInvalid(user.getId());
                     }
                 } catch (Exception markFailure) {
-                    log.warn("Could not mark token invalid for {}: {}", rfi.getSentBy(), markFailure.getMessage());
+                    log.warn("Could not mark token invalid for RFI {}: {}", rfi.getRfiNumber(), markFailure.getMessage());
                 }
                 errorMessage = (rfi.getSentBy() != null ? rfi.getSentBy() : "This user") + "'s Gmail authorization "
                         + "was rejected by Google (invalid_grant). This is per-account — it does not affect other "
@@ -430,8 +425,8 @@ public class RfiGmailSyncService {
         // roleOfEmail only returns TO/CC/VIEWER (never SENDER), so the sender's own
         // outgoing emails in the thread never trigger an automatic status change.
         if (!role.canModify()) {
-            log.info("RFI {}: email from {} ignored for status - sender is not on the To/CC list",
-                    rfi.getRfiNumber(), senderEmail);
+            log.info("RFI {}: email ignored for status - sender is not on the To/CC list",
+                    rfi.getRfiNumber());
             return;
         }
 
@@ -481,8 +476,8 @@ public class RfiGmailSyncService {
      * For RFIs sent before Gmail thread tracking existed. Searches Gmail for
      * the RFI's exact generated subject; if that matches exactly one
      * thread, adopts it. Anything else (zero or multiple matches) is left
-     * alone rather than guessed — an ambiguous result is logged to
-     * UnmatchedEmail instead.
+     * alone rather than guessed — an ambiguous result is only logged as a
+     * warning and skipped.
      */
     private void backfillThreadIdIfMissing(Rfi rfi, SenderCredentials creds) throws Exception {
         if (rfi.getGmailThreadId() != null && !rfi.getGmailThreadId().isBlank()) {
@@ -495,25 +490,9 @@ public class RfiGmailSyncService {
             rfi.setGmailThreadId(threadIds.get(0));
             rfiRepository.save(rfi);
         } else if (threadIds.size() > 1) {
-            logAmbiguousThreads(rfi, threadIds);
+            log.warn("RFI {} ({}): subject search matched {} Gmail threads; not guessing, skipping.",
+                    rfi.getRfiNumber(), rfi.getProjectName(), threadIds.size());
         }
         // threadIds.isEmpty(): no reply yet, or nothing found — leave null and try again next sync.
-    }
-
-    private void logAmbiguousThreads(Rfi rfi, List<String> ambiguousThreadIds) {
-        for (String threadId : ambiguousThreadIds) {
-            if (unmatchedEmailRepository.findByGmailThreadId(threadId).isPresent()) {
-                continue;
-            }
-            UnmatchedEmail unmatched = new UnmatchedEmail();
-            unmatched.setGmailThreadId(threadId);
-            unmatched.setSubject(rfi.getGeneratedEmailSubject());
-            unmatched.setCandidateProjectName(rfi.getProjectName());
-            unmatched.setCandidateRfiNumber(rfi.getRfiNumber());
-            unmatched.setReason("Subject search for \"" + rfi.getGeneratedEmailSubject() + "\" matched more than "
-                    + "one Gmail thread — refusing to guess which one belongs to this RFI. Resolve manually.");
-            unmatched.setResolved(false);
-            unmatchedEmailRepository.save(unmatched);
-        }
     }
 }

@@ -3,7 +3,6 @@ package com.example.backend.dto;
 import com.example.backend.entity.EmailContactData;
 import com.example.backend.entity.RfiEmailAddressType;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;

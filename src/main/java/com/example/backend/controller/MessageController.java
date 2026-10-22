@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import lombok.extern.slf4j.Slf4j;
 import com.example.backend.service.FcmService;
 import com.example.backend.entity.Attachment;
 import com.example.backend.entity.Message;
@@ -26,16 +27,7 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/messages")
-// @CrossOrigin(
-//     origins = "http://localhost:5173",
-//     allowCredentials = "true",
-//     allowedHeaders = "*",
-//     methods = {
-//         RequestMethod.GET, RequestMethod.POST,
-//         RequestMethod.PUT, RequestMethod.DELETE,
-//         RequestMethod.OPTIONS
-//     }
-// )
+@Slf4j
 public class MessageController {
 
     private final MessageRepository messageRepo;
@@ -162,7 +154,7 @@ public class MessageController {
                 saved.getId()
             );
         } catch (Exception e) {
-            System.err.println("Failed to send FCM notification: " + e.getMessage());
+            log.warn("Failed to send FCM notification: {}", e.getMessage());
         }
 
         return ResponseEntity.ok(saved);

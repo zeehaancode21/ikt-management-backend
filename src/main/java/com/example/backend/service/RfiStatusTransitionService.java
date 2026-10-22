@@ -56,6 +56,11 @@ public class RfiStatusTransitionService {
     @Autowired
     private RfiCcNotificationService notificationService;
 
+    // Tells the public client share pages "this project's RFIs changed" so the next poll
+    // reloads them (memory-only call, see PublicRfiShareService#evictProjectAfterCommit).
+    @Autowired
+    private PublicRfiShareService publicRfiShareService;
+
     /**
      * @param changedBy         username (in-app) or sender email (inbound email)
      * @param actorRole         TO or CC - who caused the change
@@ -86,6 +91,9 @@ public class RfiStatusTransitionService {
         history.setActorRole(actorRole);
         history.setSource(source);
         statusHistoryRepository.save(history);
+
+        // Client share links (read-only RFI pages) refresh as soon as this commits.
+        publicRfiShareService.evictProjectAfterCommit(saved.getProjectName());
 
         // ── Work out who to tell (all DB reads happen NOW, inside the transaction) ──
         final String actingUsername = (source == RfiActionSource.APP) ? changedBy : null;

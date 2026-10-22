@@ -18,14 +18,4 @@ public interface RfiStatusHistoryRepository extends JpaRepository<RfiStatusHisto
      * Fetches all status history for an RFI, ordered by timestamp (oldest first).
      */
     List<RfiStatusHistory> findByRfiIdOrderByChangedAtAsc(Long rfiId);
-
-    /**
-     * Fetches all status history for an RFI, ordered by timestamp (newest first).
-     */
-    List<RfiStatusHistory> findByRfiIdOrderByChangedAtDesc(Long rfiId);
-
-    /**
-     * Counts how many status changes an RFI has had.
-     */
-    long countByRfiId(Long rfiId);
 }

@@ -15,6 +15,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/auth")
@@ -42,34 +44,72 @@ public class AuthController {
      */
     public record RegisterRequest(String username, String email, String password, String role, String roleName) {}
 
+    /** Roles an OWNER is allowed to hand out when creating an account. */
+    private static final Set<String> ALLOWED_ROLES = Set.of("OWNER", "ADMIN", "MANAGER", "LEAD", "USER");
+    private static final Pattern USERNAME_PATTERN = Pattern.compile("^[\\p{L}\\p{N}._@ -]{2,50}$");
+    private static final int PASSWORD_MIN_LENGTH = 8;
+    private static final int PASSWORD_MAX_LENGTH = 72; // BCrypt ignores anything past 72 bytes
+
+    /**
+     * Create an employee account — OWNER only.
+     *
+     * SECURITY: this used to be a public endpoint that trusted the "role" sent by
+     * the caller, so anyone on the internet could register themselves as OWNER.
+     * It now requires a logged-in OWNER (the Admin Console is the only caller),
+     * and the role must be one of ALLOWED_ROLES.
+     */
     @PostMapping("/register")
+    @PreAuthorize("hasRole('OWNER')")
     public User register(@RequestBody RegisterRequest request) {
-        if (repo.findByUsername(request.username()).isPresent()) {
+        // ---- validate everything BEFORE saving anything ----
+        String username = request.username() == null ? "" : request.username().trim();
+        if (!USERNAME_PATTERN.matcher(username).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Username must be 2-50 characters: letters, numbers, spaces, . _ @ -");
+        }
+        String password = request.password();
+        if (password == null || password.length() < PASSWORD_MIN_LENGTH || password.length() > PASSWORD_MAX_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Password must be between " + PASSWORD_MIN_LENGTH + " and " + PASSWORD_MAX_LENGTH + " characters.");
+        }
+        String role = (request.role() == null || request.role().isBlank())
+                ? "USER" : request.role().trim().toUpperCase();
+        if (!ALLOWED_ROLES.contains(role)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid role");
+        }
+        String trimmedRoleName = null;
+        if (request.roleName() != null && !request.roleName().isBlank()) {
+            trimmedRoleName = request.roleName().trim();
+            if (trimmedRoleName.length() > ROLE_NAME_MAX_LENGTH) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Role name must be " + ROLE_NAME_MAX_LENGTH + " characters or fewer");
+            }
+        }
+        if (repo.findByUsername(username).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Username already exists");
         }
 
+        // ---- create ----
         User user = new User();
-        user.setUsername(request.username());
-        user.setEmail(request.email());
-        user.setPassword(encoder.encode(request.password()));
-        user.setRole(request.role() == null || request.role().isBlank() ? "USER" : request.role());
+        user.setUsername(username);
+        user.setEmail(request.email() == null ? null : request.email().trim());
+        user.setPassword(encoder.encode(password));
+        user.setRole(role);
 
         // Never return the password hash in the response
         User saved = repo.save(user);
         saved.setPassword(null);
 
         // Optional custom role name (display title), e.g. "Senior Checker".
-        if (request.roleName() != null && !request.roleName().isBlank()) {
-            String trimmedRoleName = request.roleName().trim();
-            if (trimmedRoleName.length() > ROLE_NAME_MAX_LENGTH) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Role name must be " + ROLE_NAME_MAX_LENGTH + " characters or fewer");
+        if (trimmedRoleName != null) {
+            if (employeeProfileRepository.existsByUsername(username)) {
+                employeeProfileRepository.updateRoleName(username, trimmedRoleName, java.time.LocalDateTime.now());
+            } else {
+                EmployeeProfile profile = new EmployeeProfile();
+                profile.setUsername(username);
+                profile.setRoleName(trimmedRoleName);
+                employeeProfileRepository.save(profile);
             }
-            EmployeeProfile profile = employeeProfileRepository.findByUsername(request.username())
-                    .orElseGet(EmployeeProfile::new);
-            profile.setUsername(request.username());
-            profile.setRoleName(trimmedRoleName);
-            employeeProfileRepository.save(profile);
         }
 
         return saved;
@@ -86,10 +126,6 @@ public class AuthController {
 
         String token = jwtUtil.generateToken(dbUser.getUsername());
 
-        // Custom display title (e.g. "Senior Checker") set by an admin via
-        // Employee Management. The frontend falls back to displaying the
-        // system role (below) when this is absent.
-        // Was findByUsername(): loaded the whole profile incl. picture (up to 5 MB) on EVERY login.
         String roleName = employeeProfileRepository.findRoleNameByUsername(dbUser.getUsername())
                 .filter(rn -> !rn.isBlank())
                 .orElse(null);
