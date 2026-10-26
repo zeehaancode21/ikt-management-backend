@@ -1,20 +1,12 @@
-# Your project folder is ~110 MB mostly because of these; none belong in the build.
-target
-uploads
-node_modules
-package-lock.json
-linkedin_post_log.txt
-# secrets / local-only
+# Keep secrets, build output and local data out of the Docker build context
 env.local.sh
 .env
-# tooling
+.env.*
+target/
+uploads/
+*.log
+linkedin_post_log.txt
 .git
-.github
-.idea
-.vscode
-.mvn
-mvnw
-mvnw.cmd
-.DS_Store
-__MACOSX
-*.md
+.gitignore
+node_modules/
+package-lock.json

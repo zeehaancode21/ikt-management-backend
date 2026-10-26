@@ -25,7 +25,7 @@ public interface RfiService {
      * consuming an RFI number. Powers the editable email-body preview on the
      * "New RFI" form.
      */
-    RfiEmailPreviewDto previewEmail(String projectName, String subject);
+    RfiEmailPreviewDto previewEmail(String projectName, String subject, Integer startingNumber);
 
         /**
      * @param emailBody optional user-edited email body. When null/blank, the
@@ -39,6 +39,9 @@ public interface RfiService {
      *                   Settings "known CC addresses" list once the send
      *                   succeeds — see RfiSettingsService#recordContactUsage.
      * @param priority   optional. Null falls back to {@link RfiPriority#DEFAULT} (MEDIUM).
+     * @param startingNumber optional. Only honoured when the project has NO RFIs yet:
+     *                   the first RFI is numbered with this value instead of 1
+     *                   (later RFIs continue from it). Ignored otherwise.
      */
     Rfi createAndSendRfi(
         String projectName,
@@ -52,7 +55,8 @@ public interface RfiService {
         String senderName,
         String recipientEmail,
         String ccEmails,
-        String sentBy
+        String sentBy,
+        Integer startingNumber
     ) throws Exception;
 
     /**

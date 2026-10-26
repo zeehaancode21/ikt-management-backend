@@ -1,9 +1,11 @@
 package com.example.backend.security;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
 
 import javax.crypto.SecretKey;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import io.jsonwebtoken.Claims;
@@ -19,15 +21,24 @@ import io.jsonwebtoken.security.Keys;
  * requires this token, which expires after 10 minutes and must be reissued
  * with a fresh phone code.
  *
- * IMPORTANT: change VAULT_SECRET in production and load it from an
- * environment variable, same as the encryption key.
+ * The signing key is loaded from the VAULT_SECRET environment variable
+ * (application.properties: vault.secret). It must NOT be hardcoded, and it
+ * must differ from JWT_SECRET. Generate one with: openssl rand -base64 48
  */
 @Component
 public class VaultTokenUtil {
 
-    private static final String VAULT_SECRET = "MUIV6w2E9mDaGTA3oXbLzQE5u73QIj7NaLMzfzMDWnc=";
-    private static final SecretKey KEY = Keys.hmacShaKeyFor(VAULT_SECRET.getBytes());
-    private static final long VAULT_TOKEN_VALIDITY_MS = 10 * 60 * 1000; 
+    private final SecretKey KEY;
+    private static final long VAULT_TOKEN_VALIDITY_MS = 10 * 60 * 1000;
+
+    public VaultTokenUtil(@Value("${vault.secret}") String secret) {
+        if (secret == null || secret.length() < 32) {
+            throw new IllegalStateException(
+                "vault.secret must be at least 32 characters. " +
+                "Set the VAULT_SECRET environment variable (different from JWT_SECRET).");
+        }
+        this.KEY = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+    }
 
     public String generateVaultToken(String username) {
         return Jwts.builder()

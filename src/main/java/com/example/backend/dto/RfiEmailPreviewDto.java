@@ -25,4 +25,14 @@ public class RfiEmailPreviewDto {
     private String generatedEmailSubject;
 
     private String emailBody;
+
+    /** The RFI number that would be assigned right now, e.g. "RFI#001". */
+    private String rfiNumber;
+
+    /**
+     * True when this project already has at least one RFI. The "starting RFI
+     * number" option only applies to a project's FIRST RFI, so the form hides
+     * it when this is true.
+     */
+    private boolean hasExistingRfis;
 }

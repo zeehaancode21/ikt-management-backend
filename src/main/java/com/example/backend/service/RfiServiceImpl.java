@@ -244,21 +244,23 @@ public class RfiServiceImpl implements RfiService {
      * number. Backs the editable email-body preview on the "New RFI" form.
      */
     @Override
-    public RfiEmailPreviewDto previewEmail(String projectName, String subject) {
+    public RfiEmailPreviewDto previewEmail(String projectName, String subject, Integer startingNumber) {
         if (projectName == null || projectName.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Project name is required");
         }
         projectStatusRepository.findByProjectName(projectName)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectName));
 
+        validateStartingNumber(startingNumber);
         String previewSubject = (subject == null || subject.isBlank()) ? "Subject" : subject.trim();
-        String generatedEmailSubject = buildGeneratedEmailSubject(projectName, previewSubject);
+        String rfiNumber = nextRfiNumber(projectName, startingNumber);
+        String generatedEmailSubject = buildGeneratedEmailSubject(projectName, rfiNumber, previewSubject);
         String emailBody = defaultEmailBody(generatedEmailSubject);
-        return new RfiEmailPreviewDto(generatedEmailSubject, emailBody);
+        boolean hasExisting = rfiRepository.countByProjectName(projectName) > 0;
+        return new RfiEmailPreviewDto(generatedEmailSubject, emailBody, rfiNumber, hasExisting);
     }
 
-    private String buildGeneratedEmailSubject(String projectName, String subject) {
-        String rfiNumber = nextRfiNumber(projectName);
+    private String buildGeneratedEmailSubject(String projectName, String rfiNumber, String subject) {
         String currentDate = LocalDate.now().format(SUBJECT_DATE_FORMAT);
         return String.format("%s-%s-%s_%s", projectName, rfiNumber, subject, currentDate);
     }
@@ -295,7 +297,8 @@ public class RfiServiceImpl implements RfiService {
             String senderName,
             String recipientEmail,
             String ccEmails,
-            String sentBy
+            String sentBy,
+            Integer startingNumber
     ) throws Exception {
 
         // ── Validation ──────────────────────────────────────────────────
@@ -353,9 +356,9 @@ public class RfiServiceImpl implements RfiService {
         }
 
         // ── Generate number + email subject/body ───────────────────────
-        String rfiNumber = nextRfiNumber(projectName);
-        String currentDate = LocalDate.now().format(SUBJECT_DATE_FORMAT);
-        String generatedEmailSubject = String.format("%s-%s-%s_%s", projectName, rfiNumber, subject, currentDate);
+        validateStartingNumber(startingNumber);
+        String rfiNumber = nextRfiNumber(projectName, startingNumber);
+        String generatedEmailSubject = buildGeneratedEmailSubject(projectName, rfiNumber, subject);
         String resolvedEmailBody = (emailBody == null || emailBody.isBlank())
                 ? defaultEmailBody(generatedEmailSubject)
                 : emailBody;
@@ -839,8 +842,35 @@ public class RfiServiceImpl implements RfiService {
         return saved;
     }
 
-    private String nextRfiNumber(String projectName) {
-        long count = rfiRepository.countByProjectName(projectName);
-        return String.format("RFI#%03d", count + 1);
+    private static final int MAX_STARTING_RFI_NUMBER = 99999;
+
+    private void validateStartingNumber(Integer startingNumber) {
+        if (startingNumber != null && (startingNumber < 1 || startingNumber > MAX_STARTING_RFI_NUMBER)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Starting RFI number must be between 1 and " + MAX_STARTING_RFI_NUMBER);
+        }
+    }
+
+    /**
+     * Next RFI number for a project.
+     *  - Project has no RFIs yet: use {@code startingNumber} if the user supplied one, else 1
+     *    (the original behaviour).
+     *  - Project already has RFIs: {@code startingNumber} is ignored; continue from the
+     *    highest number issued so far (so a project that started at 50 goes 50, 51, 52 ...).
+     */
+    private String nextRfiNumber(String projectName, Integer startingNumber) {
+        List<String> existing = rfiRepository.findRfiNumbersByProjectName(projectName);
+        if (existing.isEmpty()) {
+            int first = (startingNumber != null) ? startingNumber : 1;
+            return String.format("RFI#%03d", first);
+        }
+        long highest = existing.size();
+        for (String n : existing) {
+            if (n == null) continue;
+            String digits = n.replaceAll("\\D+", "");
+            if (digits.isEmpty() || digits.length() > 9) continue;
+            highest = Math.max(highest, Long.parseLong(digits));
+        }
+        return String.format("RFI#%03d", highest + 1);
     }
 }

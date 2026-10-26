@@ -2,6 +2,7 @@ package com.example.backend.config;
 
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -23,18 +24,23 @@ public class SecurityConfig {
 
     private final JwtFilter jwtFilter;
 
-    public SecurityConfig(JwtFilter jwtFilter) {
+    // Comma-separated list of browser origins allowed to call this API.
+    // Production: set CORS_ALLOWED_ORIGINS=https://ikt-management-frontend.vercel.app
+    // (no localhost entries). The default keeps local development working.
+    private final List<String> allowedOrigins;
+
+    public SecurityConfig(
+            JwtFilter jwtFilter,
+            @Value("${app.cors.allowed-origins:https://ikt-management-frontend.vercel.app,http://localhost:5173,http://localhost:3000}")
+            List<String> allowedOrigins) {
         this.jwtFilter = jwtFilter;
+        this.allowedOrigins = allowedOrigins;
     }
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(
-            "http://localhost:5173", 
-            "http://localhost:3000",
-            "https://ikt-management-frontend.vercel.app"
-        ));
+        config.setAllowedOrigins(allowedOrigins);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);

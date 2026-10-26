@@ -110,8 +110,9 @@ public class RfiController {
     @GetMapping("/email-preview")
     public ResponseEntity<ApiResponse<RfiEmailPreviewDto>> previewRfiEmail(
             @PathVariable String projectName,
-            @RequestParam(value = "subject", required = false) String subject) {
-        RfiEmailPreviewDto preview = rfiService.previewEmail(projectName, subject);
+            @RequestParam(value = "subject", required = false) String subject,
+            @RequestParam(value = "startingNumber", required = false) Integer startingNumber) {
+        RfiEmailPreviewDto preview = rfiService.previewEmail(projectName, subject, startingNumber);
         return ResponseEntity.ok(ApiResponse.success(preview));
     }
 
@@ -127,16 +128,17 @@ public class RfiController {
             @RequestParam("senderEmail") String senderEmail,
             @RequestParam(value = "senderName", required = false) String senderName,
             @RequestParam("recipientEmail") String recipientEmail,
-            @RequestParam(value = "ccEmails", required = false) String ccEmails) {
+            @RequestParam(value = "ccEmails", required = false) String ccEmails,
+            @RequestParam(value = "startingNumber", required = false) Integer startingNumber) {
         try {
             final String user = currentUsername();
             String dedupeKey = SubmitDeduplicator.key("create", user, projectName, discipline, teamType,
-                priority, subject, emailBody, senderEmail, recipientEmail, ccEmails,
+                priority, subject, emailBody, senderEmail, recipientEmail, ccEmails, startingNumber,
                 SubmitDeduplicator.fileFingerprint(attachment));
             Rfi created = submitDeduplicator.runOnce(dedupeKey, () -> rfiService.createAndSendRfi(
                 projectName, discipline, teamType, RfiPriority.parseOrDefault(priority),
                 subject, emailBody, attachment,
-                senderEmail, senderName, recipientEmail, ccEmails, user
+                senderEmail, senderName, recipientEmail, ccEmails, user, startingNumber
             ));
             return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success("RFI " + created.getRfiNumber() + " sent successfully", created));

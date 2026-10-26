@@ -53,6 +53,10 @@ public interface RfiRepository extends JpaRepository<Rfi, Long> {
      */
     long countByProjectName(String projectName);
 
+    /** All RFI numbers (e.g. "RFI#001") already issued for a project — used to find the highest one. */
+    @Query("SELECT r.rfiNumber FROM Rfi r WHERE r.projectName = :projectName")
+    List<String> findRfiNumbersByProjectName(@Param("projectName") String projectName);
+
     // ------------------------------------------------------------------
     // Auto reply check — tiny projections only (no attachment join, no
     // full entity) so the periodic "any new replies?" pass stays cheap.
