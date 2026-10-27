@@ -4,6 +4,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.backend.entity.ApiResponse;
@@ -31,8 +32,10 @@ public class RfiReplyCheckController {
     }
 
     @PostMapping("/check")
-    public ResponseEntity<ApiResponse<CheckResult>> check() {
+    public ResponseEntity<ApiResponse<CheckResult>> check(
+            @RequestParam(value = "force", defaultValue = "false") boolean force) {
         String username = SecurityContextHolder.getContext().getAuthentication().getName();
-        return ResponseEntity.ok(ApiResponse.success(service.checkUser(username)));
+        // force=true is the user pressing Refresh: skip the 30 s throttle so it really checks.
+        return ResponseEntity.ok(ApiResponse.success(service.checkUser(username, force)));
     }
 }

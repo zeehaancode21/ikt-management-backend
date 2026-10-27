@@ -10,7 +10,8 @@ import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -97,6 +98,29 @@ public class RfiGmailSyncService {
 
     @Autowired
     private UserRepository userRepository;
+
+    // Each RFI is synced in its OWN short transaction (see inTransaction). Before, syncAllForProject
+    // ran every RFI in ONE transaction: a single database hiccup on one RFI marked the whole
+    // transaction rollback-only, so at commit EVERY imported reply of the project was thrown away
+    // and the button answered 500 "Sync failed" — while the log showed the imports as fine.
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
+    /** Runs one RFI's sync in its own transaction; a failure only affects that RFI. */
+    private RfiSyncResultDto inTransaction(Rfi rfi) {
+        try {
+            return new TransactionTemplate(transactionManager).execute(status -> {
+                // Re-read inside the transaction so the RFI is a managed entity, exactly as it
+                // was when the whole sync ran in one @Transactional method.
+                Rfi managed = rfiRepository.findById(rfi.getId()).orElse(rfi);
+                return syncInternal(managed);
+            });
+        } catch (Exception e) {
+            log.warn("Gmail sync of RFI {} (id={}) was rolled back: {}", rfi.getRfiNumber(), rfi.getId(), e.getMessage());
+            return new RfiSyncResultDto(rfi.getId(), rfi.getRfiNumber(), false, 0,
+                    "Sync could not be saved (" + e.getMessage() + "). Try again.", rfi);
+        }
+    }
 
     /** Refresh token + Client ID/Secret + Gmail address for the account THIS RFI was actually sent from. */
     private static final class SenderCredentials {
@@ -230,20 +254,18 @@ public class RfiGmailSyncService {
     }
 
     /** Manually triggered sync for a single RFI ("Sync Gmail" button on the RFI detail view). */
-    @Transactional
     public RfiSyncResultDto syncRfi(Long rfiId) {
         Rfi rfi = rfiRepository.findById(rfiId)
                 .orElseThrow(() -> new ResourceNotFoundException("RFI not found with ID: " + rfiId));
-        return syncInternal(rfi);
+        return inTransaction(rfi);
     }
 
     /** Syncs every RFI in a project in one pass ("Sync all" on the RFI History tab). */
-    @Transactional
     public List<RfiSyncResultDto> syncAllForProject(String projectName) {
         List<Rfi> rfis = rfiRepository.findByProjectNameOrderByIdAsc(projectName);
         List<RfiSyncResultDto> results = new ArrayList<>();
         for (Rfi rfi : rfis) {
-            results.add(syncInternal(rfi));
+            results.add(inTransaction(rfi));
         }
         return results;
     }
@@ -269,7 +291,8 @@ public class RfiGmailSyncService {
                 fetched.addAll(emailService.fetchThreadMessages(
                         threadId, creds.refreshToken, creds.clientId, creds.clientSecret));
             }
-            fetched.sort(Comparator.comparing(GmailFetchedMessage::getMessageDate));
+            fetched.sort(Comparator.comparing(GmailFetchedMessage::getMessageDate,
+                    Comparator.nullsFirst(Comparator.naturalOrder())));
 
             // This RFI's own sender address (from their RFI Settings), not a
             // single application-wide address — each RFI can have a
@@ -430,7 +453,7 @@ public class RfiGmailSyncService {
             return;
         }
 
-        LocalDateTime replyTimestamp = msg.getMessageDate();
+        LocalDateTime replyTimestamp = msg.getMessageDate() != null ? msg.getMessageDate() : LocalDateTime.now();
         if (rfi.getResponseReceivedAt() == null || replyTimestamp.isAfter(rfi.getResponseReceivedAt())) {
             rfi.setResponseReceivedAt(replyTimestamp);
         }

@@ -64,6 +64,11 @@ public class RfiReplyAutoCheckService {
     private final Set<String> running = ConcurrentHashMap.newKeySet();
 
     public CheckResult checkUser(String username) {
+        return checkUser(username, false);
+    }
+
+    /** @param force true = the user pressed Refresh: ignore the per-user throttle (a check already running still wins). */
+    public CheckResult checkUser(String username, boolean force) {
         if (username == null || username.isBlank()) {
             return new CheckResult(0, 0);
         }
@@ -71,7 +76,7 @@ public class RfiReplyAutoCheckService {
 
         long now = System.currentTimeMillis();
         Long last = lastRunMs.get(user);
-        if (last != null && now - last < MIN_GAP_MS) {
+        if (!force && last != null && now - last < MIN_GAP_MS) {
             return new CheckResult(-1, 0); // throttled: -1 = "unchanged, ask again later"
         }
         if (!running.add(user)) {
