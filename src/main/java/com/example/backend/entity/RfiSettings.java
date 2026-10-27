@@ -50,6 +50,14 @@ public class RfiSettings {
     @Column(name = "gmail_email", nullable = false, length = 255)
     private String gmailEmail;
 
+    @Column(name = "from_email_address", length = 255)
+    @Builder.Default
+    private String fromEmailAddress = "";
+
+    @Column(name = "is_active")
+    @Builder.Default
+    private Boolean isActive = true;
+
     /**
      * Google OAuth Client ID (not secret, stored as plain text)
      */
