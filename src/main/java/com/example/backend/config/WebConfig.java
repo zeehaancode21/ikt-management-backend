@@ -41,6 +41,8 @@ public class WebConfig implements WebMvcConfigurer {
                 .addPathPatterns(
                         "/api/project-status/*/rfis",
                         "/api/project-status/*/rfis/**",
+                        // All-projects RFI list (RFI dashboard "All projects" view).
+                        "/api/rfis/**",
                         "/api/rfi-settings/**",
                         // Client share links for RFIs (create / list / revoke). The PUBLIC
                         // read endpoint is /public/share/rfi/** and is intentionally not gated.

@@ -56,6 +56,11 @@ public class RfiServiceImpl implements RfiService {
     private static final DateTimeFormatter SUBJECT_DATE_FORMAT
             = DateTimeFormatter.ofPattern("MM-dd-yy");
 
+    // A number followed by a dot at the very start of a project name ("20. Tower A").
+    // "20 Tower A" (no dot) is NOT matched and stays as is.
+    private static final java.util.regex.Pattern LEADING_NUMBER_DOT
+            = java.util.regex.Pattern.compile("^\\d+\\s*\\.\\s*");
+
     private static final String EMAIL_BODY_TEMPLATE =
         "Sir,%n%nPlease find the attached %s.%n%nKindly review and advise.%n%nThank you.";
 
@@ -202,6 +207,17 @@ public class RfiServiceImpl implements RfiService {
     }
 
     /**
+     * Retrieves the RFIs of EVERY project (newest first), filtered by team type,
+     * discipline and priority. Backs the "All projects" view of the RFI dashboard.
+     * One query, attachments joined in (no N+1).
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public List<Rfi> getAllRfis(RfiTeamType teamType, RfiDiscipline discipline, RfiPriority priority) {
+        return rfiRepository.findAllWithFilters(teamType, discipline, priority);
+    }
+
+    /**
      * Changes an RFI's priority. Deliberately does NOT go through RfiStatusHistory:
      * that table records status transitions (new_status is NOT NULL), and priority is
      * plain metadata, so it must not send email, touch the thread, or move the status.
@@ -255,18 +271,32 @@ public class RfiServiceImpl implements RfiService {
         String previewSubject = (subject == null || subject.isBlank()) ? "Subject" : subject.trim();
         String rfiNumber = nextRfiNumber(projectName, startingNumber);
         String generatedEmailSubject = buildGeneratedEmailSubject(projectName, rfiNumber, previewSubject);
-        String emailBody = defaultEmailBody(generatedEmailSubject);
+        String emailBody = defaultEmailBody(projectName, rfiNumber, previewSubject);
         boolean hasExisting = rfiRepository.countByProjectName(projectName) > 0;
         return new RfiEmailPreviewDto(generatedEmailSubject, emailBody, rfiNumber, hasExisting);
     }
 
     private String buildGeneratedEmailSubject(String projectName, String rfiNumber, String subject) {
         String currentDate = LocalDate.now().format(SUBJECT_DATE_FORMAT);
-        return String.format("%s-%s-%s_%s", projectName, rfiNumber, subject, currentDate);
+        return String.format("%s-%s-%s_%s", cleanProjectName(projectName), rfiNumber, subject, currentDate);
     }
 
-    private String defaultEmailBody(String generatedEmailSubject) {
-        return String.format(EMAIL_BODY_TEMPLATE, generatedEmailSubject);
+    /**
+     * Project name as used in the email subject AND body: a leading "number + dot"
+     * is dropped ("20. Project name" -> "Project name"). A number without a dot
+     * ("20 Project name") is kept. If nothing would be left, the name is kept as is.
+     */
+    private String cleanProjectName(String projectName) {
+        if (projectName == null) {
+            return "";
+        }
+        String trimmed = projectName.trim();
+        String cleaned = LEADING_NUMBER_DOT.matcher(trimmed).replaceFirst("").trim();
+        return cleaned.isEmpty() ? trimmed : cleaned;
+    }
+
+    private String defaultEmailBody(String projectName, String rfiNumber, String subject) {
+        return String.format(EMAIL_BODY_TEMPLATE, buildGeneratedEmailSubject(projectName, rfiNumber, subject));
     }
 
     /**
@@ -324,11 +354,27 @@ public class RfiServiceImpl implements RfiService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A valid recipient email is required");
         }
 
+        // ── From address must never be a recipient ───────────────────────
+        // "From" = the sender's own email AND the Gmail account the mail goes out from.
+        // Resolved here (before anything is stored) so a missing Gmail setup fails early.
+        SenderCredentials creds = resolveSenderCredentials(sentBy);
+        Set<String> fromAddresses = new HashSet<>();
+        fromAddresses.add(senderEmail.trim().toLowerCase());
+        if (creds.fromEmail != null && !creds.fromEmail.isBlank()) {
+            fromAddresses.add(creds.fromEmail.trim().toLowerCase());
+        }
+        String recipientLc = recipientEmail.trim().toLowerCase();
+        if (fromAddresses.contains(recipientLc)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Your own (From) address can't be used as the To address");
+        }
+
         // ── Parse + validate CC list ─────────────────────────────────────
         // Comma/semicolon separated, blank entries ignored. Any non-blank
         // entry that isn't a valid address fails loudly (rather than being
         // silently dropped) so a typo in a CC address doesn't quietly send
-        // without it.
+        // without it. The From address and the To address are never kept in
+        // CC (an address is either To or CC, not both).
         List<String> ccList = new ArrayList<>();
         if (ccEmails != null && !ccEmails.isBlank()) {
             for (String raw : ccEmails.split("[,;]")) {
@@ -338,6 +384,10 @@ public class RfiServiceImpl implements RfiService {
                 }
                 if (!EMAIL_PATTERN.matcher(trimmed).matches()) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "\"" + trimmed + "\" is not a valid CC email address");
+                }
+                String trimmedLc = trimmed.toLowerCase();
+                if (fromAddresses.contains(trimmedLc) || trimmedLc.equals(recipientLc)) {
+                    continue;
                 }
                 if (!ccList.contains(trimmed)) {
                     ccList.add(trimmed);
@@ -360,7 +410,7 @@ public class RfiServiceImpl implements RfiService {
         String rfiNumber = nextRfiNumber(projectName, startingNumber);
         String generatedEmailSubject = buildGeneratedEmailSubject(projectName, rfiNumber, subject);
         String resolvedEmailBody = (emailBody == null || emailBody.isBlank())
-                ? defaultEmailBody(generatedEmailSubject)
+                ? defaultEmailBody(projectName, rfiNumber, subject)
                 : emailBody;
         log.info("RFI email body for {}: {} (length {})",
                 generatedEmailSubject,
@@ -379,7 +429,7 @@ public class RfiServiceImpl implements RfiService {
         // sentBy is the acting user's username — this pulls THEIR own
         // connected Gmail token/address from RfiSettings, rather than the
         // one global account GmailEmailService otherwise falls back to.
-        SenderCredentials creds = resolveSenderCredentials(sentBy);
+        // (creds were resolved above, together with the From-address check)
 
         // ── Send the email; on failure, undo the stored file ────────────
         GmailSendResult sendResult;

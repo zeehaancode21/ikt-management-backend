@@ -17,6 +17,9 @@ public interface RfiService {
     /** Null teamType / discipline / priority means "don't filter on that field". */
     List<Rfi> getRfisByProject(String projectName, RfiTeamType teamType, RfiDiscipline discipline, RfiPriority priority);
 
+    /** RFIs of every project, newest first. Null filters mean "don't filter on that field". */
+    List<Rfi> getAllRfis(RfiTeamType teamType, RfiDiscipline discipline, RfiPriority priority);
+
     Rfi getRfiById(Long id);
 
     /**

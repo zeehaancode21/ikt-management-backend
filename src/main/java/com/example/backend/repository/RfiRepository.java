@@ -47,6 +47,18 @@ public interface RfiRepository extends JpaRepository<Rfi, Long> {
         @Param("priority") RfiPriority priority
     );
 
+    /** Same filters, but across ALL projects — backs the "All projects" RFI dashboard. */
+    @EntityGraph(attributePaths = "attachment")
+    @Query("SELECT r FROM Rfi r WHERE (:teamType IS NULL OR r.teamType = :teamType) " +
+           "AND (:discipline IS NULL OR r.discipline = :discipline) " +
+           "AND (:priority IS NULL OR r.priority = :priority) " +
+           "ORDER BY r.id DESC")
+    List<Rfi> findAllWithFilters(
+        @Param("teamType") RfiTeamType teamType,
+        @Param("discipline") RfiDiscipline discipline,
+        @Param("priority") RfiPriority priority
+    );
+
     /**
      * Counts the number of RFIs for a given project.
      * Used to generate the next sequential RFI number.
