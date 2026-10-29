@@ -27,6 +27,13 @@ public interface RfiEmailMessageRepository extends JpaRepository<RfiEmailMessage
     boolean existsByGmailMessageId(String gmailMessageId);
 
     /**
+     * True when this RFI already has an email with that RFC Message-ID header.
+     * Stops the owner's Gmail sync from importing a second copy of a reply the
+     * app already stored when a CC person sent it from their own Gmail.
+     */
+    boolean existsByRfiIdAndRfcMessageId(Long rfiId, String rfcMessageId);
+
+    /**
      * Finds the most recent message (either direction) for an RFI.
      * Used to anchor In-Reply-To/References headers when resubmitting.
      */

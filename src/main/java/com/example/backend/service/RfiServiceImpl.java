@@ -487,7 +487,7 @@ public class RfiServiceImpl implements RfiService {
         outgoing.setSubject(generatedEmailSubject);
         outgoing.setBodyText(resolvedEmailBody);
         outgoing.setSnippet(resolvedEmailBody.length() > 200 ? resolvedEmailBody.substring(0, 200) : resolvedEmailBody);
-        outgoing.setMessageDate(saved.getCreatedAt());
+        outgoing.setMessageDate(LocalDateTime.now());
         outgoing.getAttachments().add(savedAttachment);
         rfiEmailMessageRepository.save(outgoing);
 
@@ -795,22 +795,86 @@ public class RfiServiceImpl implements RfiService {
             }
         }
 
-        // The Gmail thread lives in the mailbox of the user who ORIGINALLY sent the RFI
-        // (rfi.getSentBy() — the same account RfiGmailSyncService reads it with).
-        // Replying from any other account can't see that thread and would start a new one,
-        // so always use the thread owner's credentials here.
+        // WHO sends this email?
+        //  - The RFI creator replying/resubmitting: the Gmail thread is in THEIR mailbox,
+        //    so it is sent from their account into that thread (unchanged behaviour).
+        //  - Anyone else (e.g. a CC person): the email is sent from THAT PERSON'S OWN
+        //    connected Gmail, so Gmail's From header, the stored From address and the
+        //    timeline all show the person who actually replied — not the RFI creator.
         String threadOwner = (rfi.getSentBy() != null && !rfi.getSentBy().isBlank())
                 ? rfi.getSentBy() : performedBy;
+        boolean replierIsThreadOwner = performedBy != null
+                && performedBy.trim().equalsIgnoreCase(threadOwner.trim());
+        String sendAsUser = replierIsThreadOwner ? threadOwner : performedBy;
+
         SenderCredentials creds;
         try {
-            creds = resolveSenderCredentials(threadOwner);
+            creds = resolveSenderCredentials(sendAsUser);
         } catch (ResponseStatusException e) {
             for (Attachment a : savedAttachments) {
                 attachmentRepository.delete(a);
             }
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "This RFI's email thread belongs to " + threadOwner + "'s Gmail account, so the "
-                            + "follow-up must be sent from it. " + e.getReason());
+                    replierIsThreadOwner
+                            ? "This RFI's email thread belongs to " + threadOwner + "'s Gmail account, so the "
+                                    + "follow-up must be sent from it. " + e.getReason()
+                            : "Your reply is sent from your own Gmail account. " + e.getReason());
+        }
+
+        // Which Gmail thread / message to reply into, in the SENDING account's mailbox.
+        // Gmail thread ids are per mailbox: the creator's thread id means nothing in a CC
+        // person's mailbox, so for them the same RFI email is found by its unique subject.
+        String threadIdToUse = rfi.getGmailThreadId();
+        String anchorGmailMessageId = lastGmailMessageId;
+        if (!replierIsThreadOwner) {
+            anchorGmailMessageId = null; // newest message of the thread in THEIR mailbox
+            try {
+                List<String> found = emailService.searchThreadIdsBySubject(
+                        rfi.getGeneratedEmailSubject(), creds.refreshToken, creds.clientId, creds.clientSecret);
+                if (found.size() == 1) {
+                    threadIdToUse = found.get(0);
+                } else {
+                    for (Attachment a : savedAttachments) {
+                        attachmentRepository.delete(a);
+                    }
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            found.isEmpty()
+                                    ? "This RFI's email was not found in your connected Gmail (" + creds.fromEmail
+                                            + "). The Gmail connected in RFI Settings must be the address this RFI was CC'd to."
+                                    : "More than one Gmail thread in your mailbox matches this RFI's subject, "
+                                            + "so the reply was not sent to avoid replying in the wrong thread.");
+                }
+            } catch (ResponseStatusException e) {
+                throw e;
+            } catch (Exception e) {
+                for (Attachment a : savedAttachments) {
+                    attachmentRepository.delete(a);
+                }
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                        "Could not look up this RFI in your Gmail: " + e.getMessage());
+            }
+        }
+
+        // Recipients. For the creator: same as before (To = recipient, CC = original CC list).
+        // For anyone else: the reply goes to everyone on the RFI EXCEPT the replier, and the
+        // RFI creator is included so the reply also lands in the creator's mailbox / sync.
+        String toAddress = rfi.getRecipientEmail();
+        List<String> ccForSend = new ArrayList<>(ccList);
+        if (!replierIsThreadOwner) {
+            String replierNorm = RfiAccessService.normalizeEmail(creds.fromEmail);
+            java.util.Map<String, String> others = new java.util.LinkedHashMap<>();
+            if (replierNorm != null && replierNorm.equals(RfiAccessService.normalizeEmail(toAddress))) {
+                toAddress = rfi.getSenderEmail();            // the "To" person replying -> goes back to the creator
+            } else if (rfi.getSenderEmail() != null) {
+                others.put(String.valueOf(RfiAccessService.normalizeEmail(rfi.getSenderEmail())), rfi.getSenderEmail());
+            }
+            for (String cc : ccList) {
+                others.putIfAbsent(String.valueOf(RfiAccessService.normalizeEmail(cc)), cc);
+            }
+            String toNorm = RfiAccessService.normalizeEmail(toAddress);
+            others.remove(String.valueOf(replierNorm));
+            others.remove(String.valueOf(toNorm));
+            ccForSend = new ArrayList<>(others.values());
         }
 
         GmailSendResult sendResult;
@@ -824,22 +888,22 @@ public class RfiServiceImpl implements RfiService {
                 contentTypes.add(f.getContentType());
             }
 
-            // GmailEmailService turns threadId + lastGmailMessageId into the real
+            // GmailEmailService turns threadId + anchor message id into the real
             // In-Reply-To / References / Subject so the reply lands in the same thread.
             sendResult = emailService.sendReplyInThread(
-                    rfi.getRecipientEmail(),
+                    toAddress,
                     replySubject,
                     message,
                     bytesList,
                     filenames,
                     contentTypes,
-                    rfi.getSenderEmail(),
-                    ccList,
-                    rfi.getGmailThreadId(),       // ← USE EXISTING THREAD ID
-                    lastGmailMessageId,            // ← IN-REPLY-TO FOR SAME THREAD
+                    replierIsThreadOwner ? rfi.getSenderEmail() : null,   // Reply-To: only for the creator
+                    ccForSend,
+                    threadIdToUse,
+                    anchorGmailMessageId,
                     creds.refreshToken,
                     creds.fromEmail,
-                    rfi.getSenderName(),
+                    replierIsThreadOwner ? rfi.getSenderName() : sendAsUser,   // From display name
                     creds.clientId,
                     creds.clientSecret
             );
@@ -852,11 +916,11 @@ public class RfiServiceImpl implements RfiService {
 
         // ── Verify thread ID wasn't lost (should still be the SAME) ──
         String resultThreadId = sendResult.getThreadId();
-        if (!rfi.getGmailThreadId().equals(resultThreadId)) {
+        if (!threadIdToUse.equals(resultThreadId)) {
             // The email is already sent, so don't throw (a retry would send a duplicate).
             log.error("Thread ID mismatch after follow-up on RFI {}! Expected: {}, Got: {}. "
                     + "Gmail created a new thread instead of replying.",
-                    rfi.getRfiNumber(), rfi.getGmailThreadId(), resultThreadId);
+                    rfi.getRfiNumber(), threadIdToUse, resultThreadId);
         }
 
         // Do NOT overwrite the thread ID — it should remain the ORIGINAL one
@@ -878,10 +942,19 @@ public class RfiServiceImpl implements RfiService {
         outgoing.setRfi(saved);
         outgoing.setDirection(RfiEmailDirection.OUTGOING);
         outgoing.setGmailMessageId(sendResult.getMessageId());
-        outgoing.setGmailThreadId(resultThreadId);  // Should match rfi.getGmailThreadId()
-        outgoing.setFromAddress(rfi.getSenderEmail());
-        outgoing.setToAddress(rfi.getRecipientEmail());
-        outgoing.setCcAddress(rfi.getCcEmails());
+        // Keep the RFI's own thread id on the record even when a CC person's mailbox used another.
+        outgoing.setGmailThreadId(replierIsThreadOwner ? resultThreadId : rfi.getGmailThreadId());
+        // The address that REALLY sent it: the creator's, or the CC person's own Gmail.
+        outgoing.setFromAddress(replierIsThreadOwner ? rfi.getSenderEmail() : creds.fromEmail);
+        outgoing.setToAddress(toAddress);
+        outgoing.setCcAddress(ccForSend.isEmpty() ? null : String.join(", ", ccForSend));
+        if (!replierIsThreadOwner) {
+            // The creator's Gmail sync will later see this same email in THEIR mailbox under a
+            // different Gmail id; the Message-ID header is the same everywhere, so remember it
+            // and the sync skips it instead of importing a duplicate.
+            outgoing.setRfcMessageId(emailService.fetchRfcMessageId(
+                    sendResult.getMessageId(), creds.refreshToken, creds.clientId, creds.clientSecret));
+        }
         outgoing.setSubject(replySubject);
         outgoing.setBodyText(message);
         outgoing.setSnippet(message.length() > 200 ? message.substring(0, 200) : message);

@@ -84,6 +84,13 @@ public class RfiEmailMessage {
     private String references;
 
     /**
+     * RFC 5322 Message-ID header (e.g. "<abc@mail.gmail.com>"). Identical in every mailbox that
+     * holds the message, so it is used to avoid importing the same email twice.
+     */
+    @Column(name = "rfc_message_id", columnDefinition = "TEXT")
+    private String rfcMessageId;
+
+    /**
      * Sender's email address.
      */
     @Column(name = "from_address", nullable = false)

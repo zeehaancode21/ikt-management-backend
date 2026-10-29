@@ -339,6 +339,27 @@ public class GmailEmailService {
         }
     }
 
+    /**
+     * Reads the RFC 5322 Message-ID header of a message in the given account's mailbox.
+     * Returns null (never throws) if it cannot be read — the caller then simply has no
+     * Message-ID to de-duplicate on.
+     */
+    public String fetchRfcMessageId(String gmailMessageId, String refreshTokenToUse,
+                                    String clientIdToUse, String clientSecretToUse) {
+        try {
+            Gmail gmail = buildGmailService(refreshTokenToUse, clientIdToUse, clientSecretToUse);
+            Message m = gmail.users().messages().get("me", gmailMessageId)
+                    .setFormat("metadata")
+                    .setMetadataHeaders(java.util.Arrays.asList("Message-ID"))
+                    .execute();
+            String v = headerValue(m.getPayload(), "Message-ID");
+            return v != null ? toAngleId(v) : null;
+        } catch (Exception e) {
+            log.warn("Could not read Message-ID of sent message {}: {}", gmailMessageId, e.getMessage());
+            return null;
+        }
+    }
+
     // ── Reply-threading helpers ──────────────────────────────────────────
 
     /** Real threading data read from an existing Gmail thread. */
@@ -734,6 +755,10 @@ public class GmailEmailService {
                         result.setFromAddress(value);
                     } else if ("To".equalsIgnoreCase(name)) {
                         result.setToAddress(value);
+                    } else if ("Cc".equalsIgnoreCase(name)) {
+                        result.setCcAddress(value);
+                    } else if ("Message-ID".equalsIgnoreCase(name) || "Message-Id".equalsIgnoreCase(name)) {
+                        result.setRfcMessageId(value != null ? value.trim() : null);
                     } else if ("Subject".equalsIgnoreCase(name)) {
                         result.setSubject(value);
                     } else if ("In-Reply-To".equalsIgnoreCase(name)) {

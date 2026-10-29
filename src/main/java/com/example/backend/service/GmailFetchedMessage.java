@@ -50,6 +50,16 @@ public class GmailFetchedMessage {
     private String toAddress;
 
     /**
+     * CC recipients as written in the Cc header (may be null).
+     */
+    private String ccAddress;
+
+    /**
+     * RFC 5322 Message-ID header (same value in every mailbox).
+     */
+    private String rfcMessageId;
+
+    /**
      * Email subject.
      */
     private String subject;

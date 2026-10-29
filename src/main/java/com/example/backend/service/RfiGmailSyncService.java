@@ -306,6 +306,13 @@ public class RfiGmailSyncService {
                     continue; // already imported by an earlier sync
                 }
 
+                // A reply a CC person sent from the app was already stored when they sent it
+                // (their Gmail id differs from the one in this mailbox, the Message-ID does not).
+                if (msg.getRfcMessageId() != null
+                        && emailMessageRepository.existsByRfiIdAndRfcMessageId(rfi.getId(), msg.getRfcMessageId())) {
+                    continue;
+                }
+
                 // The From header is usually "Name <a@b.com>", so compare plain addresses.
                 String ourNormalized = RfiAccessService.normalizeEmail(ourFromAddress);
                 String msgFromNormalized = RfiAccessService.normalizeEmail(msg.getFromAddress());
@@ -332,6 +339,8 @@ public class RfiGmailSyncService {
                 entity.setReferences(msg.getReferences());
                 entity.setFromAddress(msg.getFromAddress());
                 entity.setToAddress(msg.getToAddress());
+                entity.setCcAddress(msg.getCcAddress());
+                entity.setRfcMessageId(msg.getRfcMessageId());
                 entity.setSubject(msg.getSubject());
                 entity.setBodyText(msg.getBodyText());
                 entity.setSnippet(msg.getSnippet());
