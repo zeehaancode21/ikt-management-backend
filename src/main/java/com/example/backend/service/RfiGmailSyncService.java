@@ -396,21 +396,29 @@ public class RfiGmailSyncService {
             return new RfiSyncResultDto(rfi.getId(), rfi.getRfiNumber(), false, 0, errorMessage, rfi);
         }
     }
+    /**
+     * Records the files of one Gmail message WITHOUT downloading them.
+     *
+     * Before, every attachment of every reply (including tiny signature logos) was downloaded from
+     * Gmail and copied into the database as a LONGBLOB, which is what filled the Railway disk. Now
+     * only a small pointer row is saved (message id + part id + attachment id + whose mailbox).
+     * When someone clicks View / Download, AttachmentController streams the file from the Gmail
+     * thread on demand. A sync therefore also makes no per-file Gmail download requests any more.
+     */
     private List<Attachment> downloadAttachments(GmailFetchedMessage msg, String uploadedBy, SenderCredentials creds) {
         List<Attachment> result = new ArrayList<>();
         for (GmailFetchedAttachment att : msg.getAttachments()) {
             try {
-                byte[] bytes = emailService.fetchAttachmentBytes(
-                        msg.getGmailMessageId(), att.getGmailAttachmentId(),
-                        creds.refreshToken, creds.clientId, creds.clientSecret);
-                Attachment saved = fileStorageService.storeBytes(
-                        bytes, att.getFilename(), att.getMimeType(),
-                        uploadedBy != null ? uploadedBy : "gmail-sync");
+                Attachment saved = fileStorageService.storeGmailReference(
+                        att.getFilename(), att.getMimeType(), att.getSize(),
+                        uploadedBy != null ? uploadedBy : "gmail-sync",
+                        msg.getGmailMessageId(), att.getGmailAttachmentId(), att.getPartId(),
+                        creds.username);
                 result.add(saved);
             } catch (Exception e) {
                 // Don't fail the whole reply just because one attachment couldn't be
-                // fetched — the email and any other attachments are still stored.
-                log.warn("Failed to download attachment '{}' on Gmail message {}: {}",
+                // recorded — the email and any other attachments are still stored.
+                log.warn("Failed to record attachment '{}' on Gmail message {}: {}",
                         att.getFilename(), msg.getGmailMessageId(), e.getMessage());
             }
         }

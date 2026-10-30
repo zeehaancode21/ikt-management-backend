@@ -1,6 +1,11 @@
 package com.example.backend.service;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -13,6 +18,12 @@ import java.util.Properties;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import com.google.api.services.gmail.model.MessagePartBody;
+import com.google.api.client.http.HttpResponseException;
+import com.fasterxml.jackson.core.Base64Variant;
+import com.fasterxml.jackson.core.Base64Variants;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
@@ -677,6 +688,194 @@ public class GmailEmailService {
         }
     }
 
+
+    // ── Reading attachments straight from Gmail (nothing is stored in our database) ──────────
+
+    /**
+     * Lists the files attached to ONE Gmail message (name, type, size, partId, current attachmentId)
+     * without downloading any file content. Used right after the app sends an email, to remember
+     * where Gmail keeps the files instead of keeping a second copy in our database.
+     */
+    public List<GmailFetchedAttachment> listMessageAttachments(
+            String messageId, String refreshTokenToUse, String clientIdToUse, String clientSecretToUse) throws Exception {
+        Gmail gmail = buildGmailService(
+                (refreshTokenToUse != null && !refreshTokenToUse.isBlank()) ? refreshTokenToUse : refreshToken,
+                (clientIdToUse != null && !clientIdToUse.isBlank()) ? clientIdToUse : clientId,
+                (clientSecretToUse != null && !clientSecretToUse.isBlank()) ? clientSecretToUse : clientSecret);
+        Message msg = gmail.users().messages().get("me", messageId).setFormat("full").execute();
+        if (msg.getPayload() == null) {
+            return new ArrayList<>();
+        }
+        return extractAttachments(msg.getPayload());
+    }
+
+    /** JSON reader used to decode Gmail's attachment response as a stream. */
+    private static final JsonFactory JSON_FACTORY = new JsonFactory();
+    // Gmail sends URL-safe base64 (- and _), normally without "=" padding; tolerate padding too.
+    private static final Base64Variant GMAIL_BASE64 = Base64Variants.MODIFIED_FOR_URL.withPaddingAllowed();
+
+    /**
+     * An attachment that is being read from Gmail. Call writeTo(...) once, then close().
+     *
+     * Gmail answers an attachment request with JSON {"size":..., "data":"<base64>"}. Reading that
+     * into a String and decoding it would hold ~2.3x the file size in memory (a 20 MB PDF = ~46 MB
+     * of heap). writeTo() instead decodes the base64 while the JSON is still arriving and pushes the
+     * bytes straight into the HTTP response, so memory use stays at a few KB whatever the file size.
+     */
+    public static final class AttachmentContent implements Closeable {
+        private final InputStream jsonStream;  // raw Gmail JSON (null when the data was inline)
+        private final byte[] inlineBytes;      // tiny files Gmail sends inline inside the message
+        private final String attachmentIdUsed; // the Gmail attachment id that worked (may be refreshed)
+
+        AttachmentContent(InputStream jsonStream, byte[] inlineBytes, String attachmentIdUsed) {
+            this.jsonStream = jsonStream;
+            this.inlineBytes = inlineBytes;
+            this.attachmentIdUsed = attachmentIdUsed;
+        }
+
+        /** The Gmail attachment id that actually worked (null for inline data). */
+        public String getAttachmentIdUsed() {
+            return attachmentIdUsed;
+        }
+
+        /** Decodes the file into {@code out}; returns the number of bytes written. */
+        public long writeTo(OutputStream out) throws IOException {
+            if (inlineBytes != null) {
+                out.write(inlineBytes);
+                return inlineBytes.length;
+            }
+            try (JsonParser parser = JSON_FACTORY.createParser(jsonStream)) {
+                JsonToken token;
+                while ((token = parser.nextToken()) != null) {
+                    if (token == JsonToken.FIELD_NAME && "data".equals(parser.getCurrentName())) {
+                        if (parser.nextToken() == JsonToken.VALUE_STRING) {
+                            return parser.readBinaryValue(GMAIL_BASE64, out);
+                        }
+                    }
+                }
+            }
+            return 0L; // an empty file: Gmail omits "data"
+        }
+
+        @Override
+        public void close() {
+            if (jsonStream != null) {
+                try {
+                    jsonStream.close();
+                } catch (IOException ignored) {
+                    // nothing useful to do
+                }
+            }
+        }
+    }
+
+    /**
+     * Opens one attachment of a Gmail message for streaming (see AttachmentContent).
+     *
+     * Gmail does not promise that an attachment id stays valid forever, so:
+     *   1. try the id we stored (one fast request);
+     *   2. if Gmail rejects it (400/404), read the message once, find the same file again by its
+     *      partId (or, failing that, its file name + size) and use the fresh id.
+     * The id that worked is available from AttachmentContent.getAttachmentIdUsed() so the caller
+     * can save it and skip step 2 next time.
+     *
+     * @throws FileNotFoundException when the message or the file is no longer in the mailbox
+     */
+    public AttachmentContent openAttachment(
+            String messageId, String storedAttachmentId, String partId, String filename, Long size,
+            String refreshTokenToUse, String clientIdToUse, String clientSecretToUse) throws Exception {
+        Gmail gmail = buildGmailService(
+                (refreshTokenToUse != null && !refreshTokenToUse.isBlank()) ? refreshTokenToUse : refreshToken,
+                (clientIdToUse != null && !clientIdToUse.isBlank()) ? clientIdToUse : clientId,
+                (clientSecretToUse != null && !clientSecretToUse.isBlank()) ? clientSecretToUse : clientSecret);
+
+        if (storedAttachmentId != null && !storedAttachmentId.isBlank()) {
+            try {
+                InputStream in = gmail.users().messages().attachments()
+                        .get("me", messageId, storedAttachmentId).executeAsInputStream();
+                return new AttachmentContent(in, null, storedAttachmentId);
+            } catch (HttpResponseException e) {
+                if (e.getStatusCode() != 400 && e.getStatusCode() != 404) {
+                    throw e;
+                }
+                log.info("Stored Gmail attachment id for message {} no longer works ({}); looking the file up again",
+                        messageId, e.getStatusCode());
+            }
+        }
+
+        Message msg;
+        try {
+            msg = gmail.users().messages().get("me", messageId).setFormat("full").execute();
+        } catch (HttpResponseException e) {
+            if (e.getStatusCode() == 404) {
+                throw new FileNotFoundException("The email that carried this file is no longer in Gmail");
+            }
+            throw e;
+        }
+
+        MessagePart part = findAttachmentPart(msg.getPayload(), partId, filename, size);
+        if (part == null || part.getBody() == null) {
+            throw new FileNotFoundException("The file is no longer attached to that email in Gmail");
+        }
+        MessagePartBody body = part.getBody();
+        if (body.getAttachmentId() != null && !body.getAttachmentId().isBlank()) {
+            InputStream in = gmail.users().messages().attachments()
+                    .get("me", messageId, body.getAttachmentId()).executeAsInputStream();
+            return new AttachmentContent(in, null, body.getAttachmentId());
+        }
+        if (body.getData() != null) {
+            // Very small files come inline inside the message instead of as a separate download.
+            return new AttachmentContent(null, Base64.getUrlDecoder().decode(body.getData()), null);
+        }
+        throw new FileNotFoundException("The file has no content in Gmail");
+    }
+
+    /**
+     * Finds one file inside a message: first by partId (exact), then by file name + size, then by
+     * file name alone when that name appears only once.
+     */
+    private MessagePart findAttachmentPart(MessagePart root, String partId, String filename, Long size) {
+        List<MessagePart> files = new ArrayList<>();
+        collectFileParts(root, files);
+        if (partId != null && !partId.isBlank()) {
+            for (MessagePart p : files) {
+                if (partId.equals(p.getPartId())) {
+                    return p;
+                }
+            }
+        }
+        if (filename == null) {
+            return null;
+        }
+        MessagePart onlyByName = null;
+        int sameName = 0;
+        for (MessagePart p : files) {
+            if (filename.equals(p.getFilename())) {
+                sameName++;
+                onlyByName = p;
+                Integer partSize = p.getBody() != null ? p.getBody().getSize() : null;
+                if (size != null && partSize != null && size.longValue() == partSize.longValue()) {
+                    return p;
+                }
+            }
+        }
+        return sameName == 1 ? onlyByName : null;
+    }
+
+    private void collectFileParts(MessagePart part, List<MessagePart> out) {
+        if (part == null) {
+            return;
+        }
+        if (part.getFilename() != null && !part.getFilename().isEmpty()) {
+            out.add(part);
+        }
+        if (part.getParts() != null) {
+            for (MessagePart child : part.getParts()) {
+                collectFileParts(child, out);
+            }
+        }
+    }
+
     /**
      * Gets the legacy single globally-configured "from" email address.
      * RfiGmailSyncService no longer calls this — it now uses that RFI's own
@@ -844,10 +1043,12 @@ public class GmailEmailService {
         String filename = subPart.getFilename();
         if (filename != null && !filename.isEmpty()) {
             GmailFetchedAttachment att = new GmailFetchedAttachment();
-            att.setGmailAttachmentId(subPart.getBody().getAttachmentId());
+            att.setGmailAttachmentId(subPart.getBody() != null ? subPart.getBody().getAttachmentId() : null);
+            att.setPartId(subPart.getPartId());
             att.setFilename(subPart.getFilename());
             att.setMimeType(subPart.getMimeType());
-            att.setSize(subPart.getBody().getSize() != null ? subPart.getBody().getSize().longValue() : 0L);
+            att.setSize(subPart.getBody() != null && subPart.getBody().getSize() != null
+                    ? subPart.getBody().getSize().longValue() : 0L);
             attachments.add(att);
         }
 

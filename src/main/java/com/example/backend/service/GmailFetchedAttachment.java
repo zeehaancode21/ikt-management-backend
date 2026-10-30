@@ -20,6 +20,12 @@ public class GmailFetchedAttachment {
     private String gmailAttachmentId;
 
     /**
+     * Position of the file inside the Gmail message. Unlike gmailAttachmentId this stays the
+     * same for a given message, so it is what lets us find the file again later.
+     */
+    private String partId;
+
+    /**
      * Original filename of the attachment.
      */
     private String filename;

@@ -3,7 +3,10 @@ package com.example.backend.repository;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import com.example.backend.entity.RfiEmailMessage;
@@ -38,4 +41,18 @@ public interface RfiEmailMessageRepository extends JpaRepository<RfiEmailMessage
      * Used to anchor In-Reply-To/References headers when resubmitting.
      */
     Optional<RfiEmailMessage> findFirstByRfiIdOrderByMessageDateDesc(Long rfiId);
+
+    /**
+     * Ids (ascending, after {@code afterId}) of imported/sent Gmail messages that still have at
+     * least one attachment which is NOT yet read from Gmail. Used by GmailAttachmentOffloadService.
+     */
+    @Query("select m.id from RfiEmailMessage m "
+         + "where m.gmailMessageId is not null and m.id > :afterId "
+         + "and exists (select x.id from m.attachments x where x.gmailMessageId is null) "
+         + "order by m.id")
+    List<Long> findIdsWithStoredAttachmentsAfter(@Param("afterId") Long afterId, Pageable pageable);
+
+    /** Username that sent the RFI this message belongs to (= owner of the mailbox the message sits in). */
+    @Query("select m.rfi.sentBy from RfiEmailMessage m where m.id = :id")
+    Optional<String> findSentByOfMessage(@Param("id") Long id);
 }

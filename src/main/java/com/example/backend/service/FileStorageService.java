@@ -18,22 +18,22 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Stores uploaded attachments INSIDE THE DATABASE (table attachment_data)
- * instead of on the server's local disk.
+ * Creates and reads Attachment records. There are two ways a file can be kept:
  *
- * Render's free plan deletes local files on every redeploy, restart and
- * spin-down, which left the database pointing at files that no longer
- * existed. The database keeps the files safe through all of that.
+ * 1. IN THE DATABASE (table attachment_data, LONGBLOB) - storeFiles / storeBytes.
+ *    Used for everything that has no Gmail copy (chat uploads, etc.).
  *
- * Attachments uploaded before this change were saved on disk. They can still
- * be read while that file happens to exist (see getFileBytes), but files
- * already wiped from Render's disk cannot be recovered.
+ * 2. IN GMAIL - storeGmailReference / storePlaceholders + linkToGmail.
+ *    Used for files on an RFI email thread. Only a small "pointer" row is saved (which Gmail
+ *    message / file, in whose mailbox); the bytes are never copied into our database. They are
+ *    streamed from Gmail when someone clicks View or Download (see AttachmentController and
+ *    GmailAttachmentService).
+ *
+ * Attachments saved on the server's disk by very old versions are still readable while that file
+ * exists (see getFileBytes).
  */
 @Service
 public class FileStorageService {
-
-    /** Marker saved in Attachment.filePath for files stored in the database. */
-    private static final String DB_PATH_PREFIX = "db:";
 
     @Autowired
     private AttachmentRepository attachmentRepository;
@@ -55,6 +55,8 @@ public class FileStorageService {
         return fileExtension;
     }
 
+    // ── 1. Stored in the database ────────────────────────────────────────────────────────────
+
     public List<Attachment> storeFiles(List<MultipartFile> files, String uploadedBy) throws IOException {
         List<Attachment> attachments = new ArrayList<>();
 
@@ -66,12 +68,7 @@ public class FileStorageService {
         return attachments;
     }
 
-    /**
-     * Same storage pipeline as storeFiles, but for raw bytes rather than a
-     * MultipartFile — used by RfiGmailSyncService to persist attachments
-     * downloaded from a Gmail reply, where there's no MultipartFile/HTTP
-     * upload involved, just bytes fetched from the Gmail API.
-     */
+    /** Same as storeFiles but for raw bytes rather than a MultipartFile. */
     public Attachment storeBytes(byte[] data, String originalFilename, String contentType, String uploadedBy) throws IOException {
         return saveToDatabase(data, originalFilename, contentType, uploadedBy);
     }
@@ -81,17 +78,8 @@ public class FileStorageService {
             throw new IOException("No file data to store");
         }
 
-        String storedFilename = UUID.randomUUID().toString() + sanitizeExtension(originalFilename);
-
-        Attachment attachment = new Attachment();
-        attachment.setFilename(storedFilename);
-        attachment.setOriginalName(originalFilename != null ? originalFilename : storedFilename);
-        attachment.setFileType(contentType != null ? contentType : "application/octet-stream");
-        attachment.setFileSize((long) data.length);
-        attachment.setFilePath(DB_PATH_PREFIX + storedFilename);
-        attachment.setUploadedBy(uploadedBy);
-
-        Attachment saved = attachmentRepository.save(attachment);
+        Attachment saved = attachmentRepository.save(
+                newRecord(originalFilename, contentType, data.length, uploadedBy));
 
         try {
             attachmentDataRepository.save(new AttachmentData(saved, data));
@@ -108,14 +96,89 @@ public class FileStorageService {
         return saved;
     }
 
+    // ── 2. Kept in Gmail (no bytes stored) ───────────────────────────────────────────────────
+
     /**
-     * Returns the file's bytes, or null if the file can't be found.
-     * Looks in the database first; for older attachments that were saved to
-     * disk, falls back to the disk file if it still exists.
+     * Saves a pointer to a file that already sits in a Gmail message (used when a reply is
+     * imported by "Sync Gmail"). Nothing is downloaded and nothing is written to attachment_data.
+     */
+    public Attachment storeGmailReference(String originalFilename, String contentType, Long size, String uploadedBy,
+                                          String gmailMessageId, String gmailAttachmentId, String gmailPartId,
+                                          String gmailAccount) {
+        Attachment attachment = newRecord(originalFilename, contentType, size != null ? size : 0L, uploadedBy);
+        applyGmailPointer(attachment, gmailMessageId, gmailAttachmentId, gmailPartId, gmailAccount);
+        return attachmentRepository.save(attachment);
+    }
+
+    /**
+     * Creates records for files the app is ABOUT to email, WITHOUT saving their bytes. Right after
+     * the email is sent the caller must call linkToGmail (the file is then read from the sent
+     * message in Gmail) or, if that is not possible, storeBytesFor (safe fallback, file kept in
+     * the database). If the send fails, just delete the records.
+     */
+    public List<Attachment> storePlaceholders(List<MultipartFile> files, String uploadedBy) {
+        List<Attachment> result = new ArrayList<>();
+        for (MultipartFile file : files) {
+            result.add(storePlaceholder(file, uploadedBy));
+        }
+        return result;
+    }
+
+    public Attachment storePlaceholder(MultipartFile file, String uploadedBy) {
+        return attachmentRepository.save(
+                newRecord(file.getOriginalFilename(), file.getContentType(), file.getSize(), uploadedBy));
+    }
+
+    /** Points an attachment at its file inside a Gmail message. */
+    public Attachment linkToGmail(Attachment attachment, String gmailMessageId, String gmailAttachmentId,
+                                  String gmailPartId, String gmailAccount) {
+        applyGmailPointer(attachment, gmailMessageId, gmailAttachmentId, gmailPartId, gmailAccount);
+        return attachmentRepository.save(attachment);
+    }
+
+    /** Fallback for a placeholder that could not be linked to Gmail: keep the bytes in the database. */
+    public void storeBytesFor(Attachment attachment, byte[] data) {
+        attachmentDataRepository.save(new AttachmentData(attachment, data));
+    }
+
+    /** Drops the stored bytes of an attachment (after it was linked to its Gmail copy). */
+    public void deleteStoredBytes(Long attachmentId) {
+        attachmentDataRepository.deleteByAttachmentId(attachmentId);
+    }
+
+    private static void applyGmailPointer(Attachment a, String messageId, String attachmentId,
+                                          String partId, String account) {
+        a.setGmailMessageId(messageId);
+        a.setGmailAttachmentId(attachmentId);
+        a.setGmailPartId(partId);
+        a.setGmailAccount(account);
+        a.setFilePath(Attachment.GMAIL_PATH_PREFIX + messageId + "/" + (partId != null ? partId : "0"));
+    }
+
+    private Attachment newRecord(String originalFilename, String contentType, long size, String uploadedBy) {
+        String storedFilename = UUID.randomUUID().toString() + sanitizeExtension(originalFilename);
+
+        Attachment attachment = new Attachment();
+        attachment.setFilename(storedFilename);
+        attachment.setOriginalName(originalFilename != null && !originalFilename.isBlank() ? originalFilename : storedFilename);
+        attachment.setFileType(contentType != null && !contentType.isBlank() ? contentType : "application/octet-stream");
+        attachment.setFileSize(size);
+        attachment.setFilePath(Attachment.DB_PATH_PREFIX + storedFilename);
+        attachment.setUploadedBy(uploadedBy != null ? uploadedBy : "unknown");
+        return attachment;
+    }
+
+    // ── Reading ──────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the bytes of a file that is stored by us, or null if there are none.
+     * (Gmail-backed attachments have no stored bytes - AttachmentController streams those from Gmail.)
+     * Looks in the database first; for older attachments that were saved to disk, falls back to the
+     * disk file if it still exists.
      */
     public byte[] getFileBytes(Long attachmentId) throws IOException {
         Attachment attachment = attachmentRepository.findById(attachmentId).orElse(null);
-        if (attachment == null) {
+        if (attachment == null || attachment.isGmailBacked()) {
             return null;
         }
 
@@ -124,9 +187,10 @@ public class FileStorageService {
             return stored.getData();
         }
 
-        // Older attachment saved on disk before this change.
+        // Older attachment saved on disk before files moved into the database.
         String oldPath = attachment.getFilePath();
-        if (oldPath != null && !oldPath.startsWith(DB_PATH_PREFIX)) {
+        if (oldPath != null && !oldPath.startsWith(Attachment.DB_PATH_PREFIX)
+                && !oldPath.startsWith(Attachment.GMAIL_PATH_PREFIX)) {
             Path legacyFile = Paths.get(oldPath);
             if (Files.isRegularFile(legacyFile)) {
                 return Files.readAllBytes(legacyFile);

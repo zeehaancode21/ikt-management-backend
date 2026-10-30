@@ -1,6 +1,5 @@
 package com.example.backend.service;
 
-import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -72,6 +71,10 @@ public class RfiServiceImpl implements RfiService {
 
     @Autowired
     private FileStorageService fileStorageService;
+
+    // Makes sent files live in the Gmail thread instead of being copied into the database.
+    @Autowired
+    private GmailAttachmentService gmailAttachmentService;
 
     @Autowired
     private GmailEmailService emailService;
@@ -417,13 +420,10 @@ public class RfiServiceImpl implements RfiService {
                 (emailBody == null || emailBody.isBlank()) ? "using generated default" : "using caller-supplied override",
                 resolvedEmailBody.length());
 
-        // ── Store the file (reuses the existing attachment pipeline) ───
-        Attachment savedAttachment;
-        try {
-            savedAttachment = fileStorageService.storeFiles(List.of(attachment), sentBy).get(0);
-        } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to store attachment: " + e.getMessage());
-        }
+        // ── Record the file (WITHOUT copying its bytes into the database) ───
+        // Once the email is sent, the file is read from the sent message in the Gmail thread
+        // (see linkSentAttachments below). Only if that is not possible are the bytes kept here.
+        Attachment savedAttachment = fileStorageService.storePlaceholder(attachment, sentBy);
 
         // ── Resolve which Gmail account this actually sends from ────────
         // sentBy is the acting user's username — this pulls THEIR own
@@ -454,6 +454,12 @@ public class RfiServiceImpl implements RfiService {
             attachmentRepository.delete(savedAttachment);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to send RFI email: " + e.getMessage());
         }
+
+        // ── The email is out: point the attachment at its copy in the Gmail thread ──
+        // (never throws; falls back to keeping the bytes in the database if Gmail can't be read)
+        gmailAttachmentService.linkSentAttachments(
+                List.of(savedAttachment), List.of(attachment), sendResult.getMessageId(),
+                sentBy, creds.refreshToken, creds.clientId, creds.clientSecret);
 
         // ── Persist only after the email has actually gone out ─────────
         Rfi rfi = new Rfi();
@@ -758,13 +764,11 @@ public class RfiServiceImpl implements RfiService {
             }
         }
 
+        // Records only (no bytes yet): after the email is sent the files are read from the Gmail
+        // thread; see linkSentAttachments below.
         List<Attachment> savedAttachments = new ArrayList<>();
         if (!nonEmptyAttachments.isEmpty()) {
-            try {
-                savedAttachments = fileStorageService.storeFiles(nonEmptyAttachments, performedBy);
-            } catch (IOException e) {
-                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to store attachment(s): " + e.getMessage());
-            }
+            savedAttachments = fileStorageService.storePlaceholders(nonEmptyAttachments, performedBy);
         }
 
         // Fallback only — GmailEmailService replaces this with the thread's real subject.
@@ -912,6 +916,15 @@ public class RfiServiceImpl implements RfiService {
                 attachmentRepository.delete(a);
             }
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to send follow-up email: " + e.getMessage());
+        }
+
+        // ── The email is out: point each attachment at its copy in the Gmail thread ──
+        // The sent message sits in the SENDING account's mailbox (sendAsUser). Never throws; any
+        // file that can't be found there is kept in the database instead.
+        if (!savedAttachments.isEmpty()) {
+            gmailAttachmentService.linkSentAttachments(
+                    savedAttachments, nonEmptyAttachments, sendResult.getMessageId(),
+                    sendAsUser, creds.refreshToken, creds.clientId, creds.clientSecret);
         }
 
         // ── Verify thread ID wasn't lost (should still be the SAME) ──
