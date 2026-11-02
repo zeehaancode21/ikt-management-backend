@@ -14,9 +14,11 @@ import java.util.List;
 
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.example.backend.entity.Rfi;
 import com.example.backend.entity.RfiDiscipline;
@@ -59,6 +61,23 @@ public interface RfiRepository extends JpaRepository<Rfi, Long> {
         @Param("priority") RfiPriority priority
     );
 
+    /** Sync-all: only RFIs whose status is NOT in {@code excluded} (e.g. CLOSED / CANCELLED), oldest first. */
+    @EntityGraph(attributePaths = "attachment")
+    @Query("SELECT r FROM Rfi r WHERE r.projectName = :projectName AND r.status NOT IN :excluded ORDER BY r.id ASC")
+    List<Rfi> findActiveByProjectName(@Param("projectName") String projectName,
+                                      @Param("excluded") Collection<RfiStatus> excluded);
+
+    /**
+     * One-time clean-up: removes leading/trailing blanks from sent_by (so the queries below can use
+     * the index). Returns the number of rows changed; 0 on every later start.
+     */
+    @Transactional
+    @Modifying
+    @Query(value = "UPDATE rfis SET sent_by = TRIM(sent_by) "
+            + "WHERE sent_by IS NOT NULL AND CHAR_LENGTH(sent_by) <> CHAR_LENGTH(TRIM(sent_by))",
+            nativeQuery = true)
+    int trimSentBy();
+
     /**
      * Counts the number of RFIs for a given project.
      * Used to generate the next sequential RFI number.
@@ -81,12 +100,12 @@ public interface RfiRepository extends JpaRepository<Rfi, Long> {
 
     /** One sender's RFIs that could still receive a reply (thread known, status not excluded). */
     @Query("SELECT r.id AS id, r.gmailThreadId AS gmailThreadId FROM Rfi r " +
-           "WHERE TRIM(r.sentBy) = :sentBy AND r.gmailThreadId IS NOT NULL AND r.status NOT IN :excluded")
+           "WHERE r.sentBy = :sentBy AND r.gmailThreadId IS NOT NULL AND r.status NOT IN :excluded")
     List<WatchedRfiRow> findWatchedBySender(@Param("sentBy") String sentBy,
                                             @Param("excluded") Collection<RfiStatus> excluded);
 
     /** Every sender that currently has at least one watched RFI (used by the optional background check). */
-    @Query("SELECT DISTINCT TRIM(r.sentBy) FROM Rfi r " +
+    @Query("SELECT DISTINCT r.sentBy FROM Rfi r " +
            "WHERE r.sentBy IS NOT NULL AND r.gmailThreadId IS NOT NULL AND r.status NOT IN :excluded")
     List<String> findSendersWithWatchedRfis(@Param("excluded") Collection<RfiStatus> excluded);
 }

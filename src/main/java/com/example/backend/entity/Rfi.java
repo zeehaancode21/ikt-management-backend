@@ -16,6 +16,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
+import jakarta.persistence.UniqueConstraint;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -24,11 +25,19 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Table(name = "rfis", indexes = {
-    @Index(name = "idx_rfi_project", columnList = "projectName"),
-    @Index(name = "idx_rfi_project_filters", columnList = "projectName, teamType, discipline"),
+@Table(name = "rfis",
+    // Two RFIs of one project can never share a number (see RfiServiceImpl#nextRfiNumber).
+    // If the database already has duplicates this constraint cannot be created - run
+    // sql/01_check_duplicates.sql first.
+    uniqueConstraints = @UniqueConstraint(name = "uq_rfi_project_number", columnNames = {"project_name", "rfi_number"}),
+    indexes = {
+    // idx_rfi_project was removed: the composite indexes below already start with project_name.
+    // Column NAMES (snake_case) are required here, not Java field names.
+    @Index(name = "idx_rfi_project_filters", columnList = "project_name, team_type, discipline"),
     @Index(name = "idx_rfi_gmail_thread_id", columnList = "gmail_thread_id"),
-    @Index(name = "idx_rfi_project_priority", columnList = "project_name, priority")
+    @Index(name = "idx_rfi_project_priority", columnList = "project_name, priority"),
+    // The 60-second reply poll filters on sent_by + status.
+    @Index(name = "idx_rfi_sent_by_status", columnList = "sent_by, status")
 })
 public class Rfi {
 

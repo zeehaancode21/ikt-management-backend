@@ -58,7 +58,7 @@ public class SubmitDeduplicator {
         Entry existing = entries.putIfAbsent(key, mine);
 
         if (existing != null) {
-            log.warn("Duplicate submit ignored (same payload already sent/in progress): {}", key);
+            log.warn("Duplicate submit ignored (same payload already sent/in progress): key={}", key.substring(0, Math.min(12, key.length())));
             try {
                 return (T) existing.future.get(IN_FLIGHT_MAX_MS, TimeUnit.MILLISECONDS);
             } catch (ExecutionException e) {
@@ -100,13 +100,24 @@ public class SubmitDeduplicator {
 
     // ── Fingerprint helpers ─────────────────────────────────────────────
 
-    /** Builds a stable key from the request parts (null-safe). */
+    /**
+     * Builds a stable key from the request parts (null-safe).
+     *
+     * The key is a SHA-256 hash, not the raw text: the parts contain the email body and file
+     * fingerprints, and the key is both kept in memory and written to the log on a duplicate
+     * submit. Hashing keeps that content out of the log and keeps the map keys small.
+     */
     public static String key(Object... parts) {
         StringBuilder sb = new StringBuilder();
         for (Object p : parts) {
-            sb.append(p == null ? "<null>" : p.toString()).append('|');
+            sb.append(p == null ? "<null>" : p.toString()).append('\u0001');
         }
-        return sb.toString();
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(md.digest(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** SHA-256 of a file's bytes (name + size included) so identical re-sends match. */

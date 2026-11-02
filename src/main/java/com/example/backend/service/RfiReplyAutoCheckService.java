@@ -105,7 +105,9 @@ public class RfiReplyAutoCheckService {
             int imported = 0;
             boolean allOk = true;
             for (String threadId : hits) {
-                RfiSyncResultDto result = rfiGmailSyncService.syncRfi(rfiByThread.get(threadId));
+                // The thread id is known here (that is how the probe found it), so skip the extra
+                // Gmail subject search: one Gmail call per thread instead of two.
+                RfiSyncResultDto result = rfiGmailSyncService.syncRfi(rfiByThread.get(threadId), false);
                 if (Boolean.TRUE.equals(result.getSuccess())) {
                     imported += result.getNewMessagesCount() == null ? 0 : result.getNewMessagesCount();
                 } else {

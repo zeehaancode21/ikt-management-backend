@@ -8,10 +8,16 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -120,6 +126,85 @@ public class RfiServiceImpl implements RfiService {
     // priority changes (status changes are announced from RfiStatusTransitionService).
     @Autowired
     private PublicRfiShareService publicRfiShareService;
+
+    // ── Limits: a file is held in memory about 3-4x its size while it is sent (bytes + MIME buffer
+    // + base64 text), which matters on a small instance. Override in application.properties.
+    @Value("${app.rfi.max-attachment-bytes:10485760}")
+    private long maxAttachmentBytes = 10L * 1024 * 1024;
+
+    @Value("${app.rfi.max-followup-total-bytes:20971520}")
+    private long maxFollowUpTotalBytes = 20L * 1024 * 1024;
+
+    // The email that is SENT is never cut; only the copy kept in the database is capped.
+    @Value("${app.rfi.stored-body-max-chars:20000}")
+    private int storedBodyMaxChars = EmailBodyCleaner.DEFAULT_MAX_CHARS;
+
+    // ── Short database transactions only. Gmail calls run with NO transaction (and no pooled
+    // connection) open - see createAndSendRfi / sendFollowUpAndTransition.
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
+    private volatile TransactionTemplate txTemplate;
+
+    private TransactionTemplate tx() {
+        TransactionTemplate t = txTemplate;
+        if (t == null) {
+            t = new TransactionTemplate(transactionManager);
+            txTemplate = t;
+        }
+        return t;
+    }
+
+    // ── One create at a time per project: "read highest number, add one" is not atomic, and the
+    // number is already inside the email subject before the row is saved. Striped locks keep
+    // memory fixed (64 locks). This covers a single backend instance; the unique index
+    // (project_name, rfi_number) is the safety net if you ever run more than one.
+    private static final int LOCK_STRIPES = 64;
+    private static final long PROJECT_LOCK_WAIT_SECONDS = 90;
+    private final ReentrantLock[] projectLocks = createLocks();
+
+    private static ReentrantLock[] createLocks() {
+        ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
+        for (int i = 0; i < LOCK_STRIPES; i++) {
+            locks[i] = new ReentrantLock();
+        }
+        return locks;
+    }
+
+    private ReentrantLock lockFor(String projectName) {
+        int h = projectName == null ? 0 : projectName.trim().toLowerCase().hashCode();
+        return projectLocks[Math.floorMod(h, LOCK_STRIPES)];
+    }
+
+    /**
+     * Runs the database part that follows an email that has ALREADY gone out. Retries once; if it
+     * still fails, logs everything needed to restore the record by hand and tells the user NOT to
+     * send again (a retry from the UI would email the recipient a second time).
+     */
+    private <T> T persistAfterSend(String what, GmailSendResult sent, Supplier<T> action) {
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return action.get();
+            } catch (RuntimeException e) {
+                last = e;
+                log.warn("Saving {} after the email was sent failed (attempt {}): {}", what, attempt, e.toString());
+                if (attempt == 1) {
+                    try {
+                        java.lang.Thread.sleep(300);
+                    } catch (InterruptedException ie) {
+                        java.lang.Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        log.error("EMAIL SENT BUT NOT SAVED: {} gmailMessageId={} gmailThreadId={} - restore this record manually, do NOT resend.",
+                what, sent.getMessageId(), sent.getThreadId(), last);
+        throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                "The email for " + what + " was sent, but saving it failed. Do NOT send it again - "
+                        + "contact the admin (Gmail message " + sent.getMessageId() + ").");
+    }
 
     /**
      * Refresh token + Gmail address/name + OAuth Client ID/Secret for
@@ -304,20 +389,23 @@ public class RfiServiceImpl implements RfiService {
 
     /**
      * Creates, stores, and emails an RFI in one step. There is no "draft" state
-     * — if the email fails to send, nothing is persisted (the just-stored
+     * - if the email fails to send, nothing is persisted (the just-stored
      * attachment is deleted too).
+     *
+     * NO method-level @Transactional (on purpose). The order is:
+     *   1. validate (no transaction)
+     *   2. lock this project, pick the next RFI number
+     *   3. send the email through Gmail            <- no database connection is held
+     *   4. save RFI + first email + first history row + project defaults in ONE short transaction
+     *      (retried once; if it still fails the log has everything to restore it, and the user is
+     *      told NOT to send again)
+     *   5. address book + notifications (each in its own transaction, can never undo the send)
      *
      * recipientEmail is user-typed (not read from the project) and, once the
      * send succeeds, is written back onto ProjectStatus.rfiRecipientEmail so
      * the next RFI on this project pre-fills with it.
-     *
-     * Also captures the Gmail threadId of the sent message onto the RFI, and
-     * writes the initial two history rows (RfiEmailMessage OUTGOING +
-     * RfiStatusHistory "created") so the communication/status timeline
-     * starts complete from the moment the RFI is issued.
      */
     @Override
-    @Transactional
     public Rfi createAndSendRfi(
             String projectName,
             RfiDiscipline discipline,
@@ -407,118 +495,143 @@ public class RfiServiceImpl implements RfiService {
         if (!looksLikePdf) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only PDF files are accepted");
         }
-
-        // ── Generate number + email subject/body ───────────────────────
-        validateStartingNumber(startingNumber);
-        String rfiNumber = nextRfiNumber(projectName, startingNumber);
-        String generatedEmailSubject = buildGeneratedEmailSubject(projectName, rfiNumber, subject);
-        String resolvedEmailBody = (emailBody == null || emailBody.isBlank())
-                ? defaultEmailBody(projectName, rfiNumber, subject)
-                : emailBody;
-        log.info("RFI email body for {}: {} (length {})",
-                generatedEmailSubject,
-                (emailBody == null || emailBody.isBlank()) ? "using generated default" : "using caller-supplied override",
-                resolvedEmailBody.length());
-
-        // ── Record the file (WITHOUT copying its bytes into the database) ───
-        // Once the email is sent, the file is read from the sent message in the Gmail thread
-        // (see linkSentAttachments below). Only if that is not possible are the bytes kept here.
-        Attachment savedAttachment = fileStorageService.storePlaceholder(attachment, sentBy);
-
-        // ── Resolve which Gmail account this actually sends from ────────
-        // sentBy is the acting user's username — this pulls THEIR own
-        // connected Gmail token/address from RfiSettings, rather than the
-        // one global account GmailEmailService otherwise falls back to.
-        // (creds were resolved above, together with the From-address check)
-
-        // ── Send the email; on failure, undo the stored file ────────────
-        GmailSendResult sendResult;
-        try {
-            log.info("sendWithAttachment ccList=[{}]", ccList);
-            sendResult = emailService.sendWithAttachment(
-                    recipientEmail,
-                    generatedEmailSubject,
-                    resolvedEmailBody,
-                    attachment.getBytes(),
-                    originalName,
-                    attachment.getContentType(),
-                    senderEmail,
-                    ccList,
-                    creds.refreshToken,
-                    creds.fromEmail,
-                    senderName,
-                    creds.clientId,
-                    creds.clientSecret
-            );
-        } catch (Exception e) {
-            attachmentRepository.delete(savedAttachment);
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to send RFI email: " + e.getMessage());
+        if (attachment.getSize() > maxAttachmentBytes) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "The PDF is too large (maximum " + (maxAttachmentBytes / (1024 * 1024))
+                            + " MB). Please compress it and try again.");
         }
 
-        // ── The email is out: point the attachment at its copy in the Gmail thread ──
-        // (never throws; falls back to keeping the bytes in the database if Gmail can't be read)
-        gmailAttachmentService.linkSentAttachments(
-                List.of(savedAttachment), List.of(attachment), sendResult.getMessageId(),
-                sentBy, creds.refreshToken, creds.clientId, creds.clientSecret);
+        validateStartingNumber(startingNumber);
 
-        // ── Persist only after the email has actually gone out ─────────
-        Rfi rfi = new Rfi();
-        rfi.setProjectName(projectName);
-        rfi.setRfiNumber(rfiNumber);
-        rfi.setDiscipline(discipline);
-        rfi.setTeamType(teamType);
-        // Null (client sent nothing) -> MEDIUM. Invalid values were already rejected as 400 upstream.
-        rfi.setPriority(priority != null ? priority : RfiPriority.DEFAULT);
-        rfi.setSubject(subject);
-        rfi.setGeneratedEmailSubject(generatedEmailSubject);
-        rfi.setEmailBody(resolvedEmailBody);
-        rfi.setRecipientEmail(recipientEmail);
-        rfi.setCcEmails(normalizedCcEmails);
-        rfi.setSenderEmail(senderEmail);
-        rfi.setSenderName(senderName);
-        rfi.setAttachment(savedAttachment);
-        rfi.setStatus(RfiStatus.SENT);
-        rfi.setSentBy(sentBy);
-        rfi.setCreatedAt(LocalDateTime.now());
-        rfi.setGmailThreadId(sendResult.getThreadId());
-        Rfi saved = rfiRepository.saveAndFlush(rfi);
-        RfiEmailMessage outgoing = new RfiEmailMessage();
-        outgoing.setRfi(saved);
-        outgoing.setDirection(RfiEmailDirection.OUTGOING);
-        outgoing.setGmailMessageId(sendResult.getMessageId());
-        outgoing.setGmailThreadId(sendResult.getThreadId());
-        outgoing.setFromAddress(senderEmail);
-        outgoing.setToAddress(recipientEmail);
-        outgoing.setCcAddress(normalizedCcEmails);
-        outgoing.setSubject(generatedEmailSubject);
-        outgoing.setBodyText(resolvedEmailBody);
-        outgoing.setSnippet(resolvedEmailBody.length() > 200 ? resolvedEmailBody.substring(0, 200) : resolvedEmailBody);
-        outgoing.setMessageDate(LocalDateTime.now());
-        outgoing.getAttachments().add(savedAttachment);
-        rfiEmailMessageRepository.save(outgoing);
+        // ── One create at a time per project (number + send + save) ───────
+        final ReentrantLock projectLock = lockFor(projectName);
+        boolean locked;
+        try {
+            locked = projectLock.tryLock(PROJECT_LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException ie) {
+            java.lang.Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "The request was interrupted. Please try again.");
+        }
+        if (!locked) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Another RFI for this project is being sent right now. Please try again in a moment.");
+        }
 
-        // ── Seed the status history ─────────────────────────────────────
-        RfiStatusHistory created = new RfiStatusHistory();
-        created.setRfi(saved);
-        created.setOldStatus(null);
-        created.setNewStatus(RfiStatus.SENT);
-        created.setChangedBy(sentBy);
-        created.setNote("RFI created and issued to " + recipientEmail);
-        rfiStatusHistoryRepository.save(created);
+        final Rfi saved;
+        final String rfiNumber;
+        try {
+            // ── Generate number + email subject/body ───────────────────────
+            rfiNumber = nextRfiNumber(projectName, startingNumber);
+            final String generatedEmailSubject = buildGeneratedEmailSubject(projectName, rfiNumber, subject);
+            final String resolvedEmailBody = (emailBody == null || emailBody.isBlank())
+                    ? defaultEmailBody(projectName, rfiNumber, subject)
+                    : emailBody;
+            log.info("RFI email body for {}: {} (length {})",
+                    generatedEmailSubject,
+                    (emailBody == null || emailBody.isBlank()) ? "using generated default" : "using caller-supplied override",
+                    resolvedEmailBody.length());
 
-        // ── Save the typed recipient + CC list back onto the project for reuse ───
-        // Same idea as rfiRecipientEmail: the NEXT RFI created on this project
-        // defaults its To/CC fields to whatever was used last time, instead of
-        // starting empty. normalizedCcEmails is null when no CC was used —
-        // that's fine, it just makes the next RFI's CC default empty too.
-        project.setRfiRecipientEmail(recipientEmail);
-        project.setRfiCcEmails(normalizedCcEmails);
-        projectStatusRepository.save(project);
+            // ── Record the file (WITHOUT copying its bytes into the database) ───
+            final Attachment savedAttachment = fileStorageService.storePlaceholder(attachment, sentBy);
 
-                // ── Post-commit extras (address book + notifications) ──────────
-        // Run only AFTER the RFI is safely committed, each in its own
-        // transaction, so a failure here can never roll back or fail a send
-        // that has already gone out.
+            // ── Send the email (NO transaction open); on failure, undo the stored file ──
+            final GmailSendResult sendResult;
+            try {
+                log.info("sendWithAttachment ccList=[{}]", ccList);
+                sendResult = emailService.sendWithAttachment(
+                        recipientEmail,
+                        generatedEmailSubject,
+                        resolvedEmailBody,
+                        attachment.getBytes(),
+                        originalName,
+                        attachment.getContentType(),
+                        senderEmail,
+                        ccList,
+                        creds.refreshToken,
+                        creds.fromEmail,
+                        senderName,
+                        creds.clientId,
+                        creds.clientSecret
+                );
+            } catch (Exception e) {
+                attachmentRepository.delete(savedAttachment);
+                throw RfiErrors.build(HttpStatus.BAD_GATEWAY, "Failed to send the RFI email", e);
+            }
+
+            // ── The email is out: point the attachment at its copy in the Gmail thread ──
+            // (never throws; falls back to keeping the bytes in the database if Gmail can't be read)
+            gmailAttachmentService.linkSentAttachments(
+                    List.of(savedAttachment), List.of(attachment), sendResult.getMessageId(),
+                    sentBy, creds.refreshToken, creds.clientId, creds.clientSecret);
+
+            // ── Persist only after the email has actually gone out, in ONE short transaction ──
+            final String storedBody = EmailBodyCleaner.cap(resolvedEmailBody, storedBodyMaxChars);
+            final String sentByTrimmed = sentBy == null ? null : sentBy.trim();   // stored trimmed -> index-friendly
+            final String ccToStore = normalizedCcEmails;
+            saved = this.<Rfi>persistAfterSend("RFI " + rfiNumber, sendResult, () -> tx().<Rfi>execute(status -> {
+                Rfi rfi = new Rfi();
+                rfi.setProjectName(projectName);
+                rfi.setRfiNumber(rfiNumber);
+                rfi.setDiscipline(discipline);
+                rfi.setTeamType(teamType);
+                // Null (client sent nothing) -> MEDIUM. Invalid values were already rejected as 400 upstream.
+                rfi.setPriority(priority != null ? priority : RfiPriority.DEFAULT);
+                rfi.setSubject(subject);
+                rfi.setGeneratedEmailSubject(generatedEmailSubject);
+                rfi.setEmailBody(storedBody);
+                rfi.setRecipientEmail(recipientEmail);
+                rfi.setCcEmails(ccToStore);
+                rfi.setSenderEmail(senderEmail);
+                rfi.setSenderName(senderName);
+                rfi.setAttachment(savedAttachment);
+                rfi.setStatus(RfiStatus.SENT);
+                rfi.setSentBy(sentByTrimmed);
+                rfi.setCreatedAt(LocalDateTime.now());
+                rfi.setGmailThreadId(sendResult.getThreadId());
+                Rfi savedRfi = rfiRepository.saveAndFlush(rfi);
+
+                RfiEmailMessage outgoing = new RfiEmailMessage();
+                outgoing.setRfi(savedRfi);
+                outgoing.setDirection(RfiEmailDirection.OUTGOING);
+                outgoing.setGmailMessageId(sendResult.getMessageId());
+                outgoing.setGmailThreadId(sendResult.getThreadId());
+                outgoing.setFromAddress(senderEmail);
+                outgoing.setToAddress(recipientEmail);
+                outgoing.setCcAddress(ccToStore);
+                outgoing.setSubject(generatedEmailSubject);
+                outgoing.setBodyText(storedBody);
+                outgoing.setSnippet(storedBody.length() > 200 ? storedBody.substring(0, 200) : storedBody);
+                outgoing.setMessageDate(LocalDateTime.now());
+                outgoing.getAttachments().add(savedAttachment);
+                rfiEmailMessageRepository.save(outgoing);
+
+                // ── Seed the status history ─────────────────────────────────
+                RfiStatusHistory created = new RfiStatusHistory();
+                created.setRfi(savedRfi);
+                created.setOldStatus(null);
+                created.setNewStatus(RfiStatus.SENT);
+                created.setChangedBy(sentByTrimmed);
+                created.setNote("RFI created and issued to " + recipientEmail);
+                rfiStatusHistoryRepository.save(created);
+
+                // ── Save the typed recipient + CC list back onto the project for reuse ──
+                ProjectStatus projectRow = projectStatusRepository.findByProjectName(projectName)
+                        .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectName));
+                projectRow.setRfiRecipientEmail(recipientEmail);
+                projectRow.setRfiCcEmails(ccToStore);
+                projectStatusRepository.save(projectRow);
+
+                // A new RFI should show up on any client page that lists this project's RFIs.
+                publicRfiShareService.evictProjectAfterCommit(projectName);
+                return savedRfi;
+            }));
+        } finally {
+            projectLock.unlock();
+        }
+
+        // ── Post-send extras (address book + notifications) ──────────────
+        // Run only AFTER the RFI is safely committed, each in its own transaction, so a failure
+        // here can never roll back or fail a send that has already gone out.
         final Long senderUserId = creds.userId;
         final String fromLabel = (senderName != null ? senderName : sentBy);
 
@@ -532,47 +645,31 @@ public class RfiServiceImpl implements RfiService {
             }
         }
 
-        final Runnable postSendExtras = () -> {
-            try {
-                rfiSettingsService.recordContactUsage(senderUserId, RfiEmailAddressType.TO, recipientEmail);
-                for (String cc : ccList) {
-                    rfiSettingsService.recordContactUsage(senderUserId, RfiEmailAddressType.CC, cc);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to record TO/CC address(es) for RFI {}: {}", rfiNumber, e.getMessage());
+        try {
+            rfiSettingsService.recordContactUsage(senderUserId, RfiEmailAddressType.TO, recipientEmail);
+            for (String cc : ccList) {
+                rfiSettingsService.recordContactUsage(senderUserId, RfiEmailAddressType.CC, cc);
             }
-            try {
-                rfiCcNotificationService.notifyCcEmployees(
-                        toList,
-                        sentBy,
-                        "New RFI " + rfiNumber,
-                        "You received RFI " + rfiNumber + " (" + projectName + "): \"" + subject
-                                + "\", sent by " + fromLabel + "."
-                );
-                rfiCcNotificationService.notifyCcEmployees(
-                        ccOnlyList,
-                        sentBy,
-                        "New RFI " + rfiNumber,
-                        "You were CC'd on RFI " + rfiNumber + " (" + projectName + "): \"" + subject
-                                + "\", sent to " + recipientEmail + " by " + fromLabel + "."
-                );
-            } catch (Exception e) {
-                log.warn("Failed to send notifications for RFI {}: {}", rfiNumber, e.getMessage());
-            }
-        };
-
-        // A new RFI should show up on any client page that lists this project's RFIs.
-        publicRfiShareService.evictProjectAfterCommit(projectName);
-
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    postSendExtras.run();
-                }
-            });
-        } else {
-            postSendExtras.run();
+        } catch (Exception e) {
+            log.warn("Failed to record TO/CC address(es) for RFI {}: {}", rfiNumber, e.getMessage());
+        }
+        try {
+            rfiCcNotificationService.notifyCcEmployees(
+                    toList,
+                    sentBy,
+                    "New RFI " + rfiNumber,
+                    "You received RFI " + rfiNumber + " (" + projectName + "): \"" + subject
+                            + "\", sent by " + fromLabel + "."
+            );
+            rfiCcNotificationService.notifyCcEmployees(
+                    ccOnlyList,
+                    sentBy,
+                    "New RFI " + rfiNumber,
+                    "You were CC'd on RFI " + rfiNumber + " (" + projectName + "): \"" + subject
+                            + "\", sent to " + recipientEmail + " by " + fromLabel + "."
+            );
+        } catch (Exception e) {
+            log.warn("Failed to send notifications for RFI {}: {}", rfiNumber, e.getMessage());
         }
 
         return saved;
@@ -669,7 +766,6 @@ public class RfiServiceImpl implements RfiService {
     }
 
     @Override
-    @Transactional
     public Rfi resubmitRfi(Long rfiId, String message, List<MultipartFile> attachments, String performedBy) throws Exception {
         return sendFollowUpAndTransition(
             rfiId, message, attachments, performedBy,
@@ -687,7 +783,6 @@ public class RfiServiceImpl implements RfiService {
      * Anyone not on the To/CC list gets 403 and nothing is sent.
      */
     @Override
-    @Transactional
     public Rfi replyToRfi(Long rfiId, String message, List<MultipartFile> attachments,
                           boolean explicitResubmit, String performedBy) throws Exception {
         Rfi rfi = getRfiById(rfiId);
@@ -706,7 +801,6 @@ public class RfiServiceImpl implements RfiService {
     }
 
     @Override
-    @Transactional
     public Rfi reopenRfi(Long rfiId, String message, List<MultipartFile> attachments, String performedBy) throws Exception {
         return sendFollowUpAndTransition(
             rfiId, message, attachments, performedBy,
@@ -762,6 +856,17 @@ public class RfiServiceImpl implements RfiService {
                     nonEmptyAttachments.add(f);
                 }
             }
+        }
+
+        // Memory guard: the files are held in RAM while the email is built and sent.
+        long totalBytes = 0;
+        for (MultipartFile f : nonEmptyAttachments) {
+            totalBytes += f.getSize();
+        }
+        if (totalBytes > maxFollowUpTotalBytes) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    "The attached files are too large (maximum " + (maxFollowUpTotalBytes / (1024 * 1024))
+                            + " MB in total). Please send fewer or smaller files.");
         }
 
         // Records only (no bytes yet): after the email is sent the files are read from the Gmail
@@ -854,8 +959,7 @@ public class RfiServiceImpl implements RfiService {
                 for (Attachment a : savedAttachments) {
                     attachmentRepository.delete(a);
                 }
-                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                        "Could not look up this RFI in your Gmail: " + e.getMessage());
+                throw RfiErrors.build(HttpStatus.BAD_GATEWAY, "Could not look up this RFI in your Gmail", e);
             }
         }
 
@@ -915,7 +1019,7 @@ public class RfiServiceImpl implements RfiService {
             for (Attachment a : savedAttachments) {
                 attachmentRepository.delete(a);
             }
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Failed to send follow-up email: " + e.getMessage());
+            throw RfiErrors.build(HttpStatus.BAD_GATEWAY, "Failed to send the follow-up email", e);
         }
 
         // ── The email is out: point each attachment at its copy in the Gmail thread ──
@@ -936,46 +1040,60 @@ public class RfiServiceImpl implements RfiService {
                     rfi.getRfiNumber(), threadIdToUse, resultThreadId);
         }
 
-        // Do NOT overwrite the thread ID — it should remain the ORIGINAL one
-        // (only set if somehow it was null initially, which shouldn't happen)
-        if (rfi.getGmailThreadId() == null || rfi.getGmailThreadId().isBlank()) {
-            rfi.setGmailThreadId(resultThreadId);
-        }
-        
-        // Status + history + notifications in the one shared place. The history
-        // row is written even if the status is already the target, so every
-        // reply/resubmit shows on the timeline.
-        String historyNote = savedAttachments.isEmpty()
+        // The CC person's Gmail has the same email under a different Gmail id; the Message-ID
+        // header is the same everywhere, so remember it and the creator's sync skips it instead
+        // of importing a duplicate. (A Gmail call - done BEFORE the database transaction opens.)
+        final String rfcMessageId = replierIsThreadOwner ? null : emailService.fetchRfcMessageId(
+                sendResult.getMessageId(), creds.refreshToken, creds.clientId, creds.clientSecret);
+
+        // ── Everything the email changed in the database, in ONE short transaction ──
+        final String historyNote = savedAttachments.isEmpty()
                 ? noteNoAttachments
                 : String.format(noteWithAttachmentsFormat, savedAttachments.size());
-        Rfi saved = rfiStatusTransitionService.transition(
-                rfi, targetStatus, performedBy, actorRole, RfiActionSource.APP, historyNote, true);
+        final List<Attachment> attachmentsToLink = new ArrayList<>(savedAttachments);
+        final String toForRecord = toAddress;
+        final List<String> ccForRecord = new ArrayList<>(ccForSend);
+        final String replySubjectFinal = replySubject;
+        final String fromForRecord = replierIsThreadOwner ? rfi.getSenderEmail() : creds.fromEmail;
+        final boolean ownerReply = replierIsThreadOwner;
 
-        RfiEmailMessage outgoing = new RfiEmailMessage();
-        outgoing.setRfi(saved);
-        outgoing.setDirection(RfiEmailDirection.OUTGOING);
-        outgoing.setGmailMessageId(sendResult.getMessageId());
-        // Keep the RFI's own thread id on the record even when a CC person's mailbox used another.
-        outgoing.setGmailThreadId(replierIsThreadOwner ? resultThreadId : rfi.getGmailThreadId());
-        // The address that REALLY sent it: the creator's, or the CC person's own Gmail.
-        outgoing.setFromAddress(replierIsThreadOwner ? rfi.getSenderEmail() : creds.fromEmail);
-        outgoing.setToAddress(toAddress);
-        outgoing.setCcAddress(ccForSend.isEmpty() ? null : String.join(", ", ccForSend));
-        if (!replierIsThreadOwner) {
-            // The creator's Gmail sync will later see this same email in THEIR mailbox under a
-            // different Gmail id; the Message-ID header is the same everywhere, so remember it
-            // and the sync skips it instead of importing a duplicate.
-            outgoing.setRfcMessageId(emailService.fetchRfcMessageId(
-                    sendResult.getMessageId(), creds.refreshToken, creds.clientId, creds.clientSecret));
-        }
-        outgoing.setSubject(replySubject);
-        outgoing.setBodyText(message);
-        outgoing.setSnippet(message.length() > 200 ? message.substring(0, 200) : message);
-        outgoing.setMessageDate(LocalDateTime.now());
-        outgoing.getAttachments().addAll(savedAttachments);
-        rfiEmailMessageRepository.save(outgoing);
+        return this.<Rfi>persistAfterSend("follow-up on RFI " + rfi.getRfiNumber(), sendResult, () -> tx().<Rfi>execute(status -> {
+            // Re-read inside the transaction: the RFI loaded above is detached by now.
+            Rfi managed = rfiRepository.findById(rfiId)
+                    .orElseThrow(() -> new ResourceNotFoundException("RFI not found with ID: " + rfiId));
 
-        return saved;
+            // Do NOT overwrite the thread ID - it should remain the ORIGINAL one
+            // (only set if somehow it was null initially, which shouldn't happen)
+            if (managed.getGmailThreadId() == null || managed.getGmailThreadId().isBlank()) {
+                managed.setGmailThreadId(resultThreadId);
+            }
+
+            // Status + history + notifications in the one shared place. The history
+            // row is written even if the status is already the target, so every
+            // reply/resubmit shows on the timeline.
+            Rfi saved = rfiStatusTransitionService.transition(
+                    managed, targetStatus, performedBy, actorRole, RfiActionSource.APP, historyNote, true);
+
+            RfiEmailMessage outgoing = new RfiEmailMessage();
+            outgoing.setRfi(saved);
+            outgoing.setDirection(RfiEmailDirection.OUTGOING);
+            outgoing.setGmailMessageId(sendResult.getMessageId());
+            // Keep the RFI's own thread id on the record even when a CC person's mailbox used another.
+            outgoing.setGmailThreadId(ownerReply ? resultThreadId : managed.getGmailThreadId());
+            // The address that REALLY sent it: the creator's, or the CC person's own Gmail.
+            outgoing.setFromAddress(fromForRecord);
+            outgoing.setToAddress(toForRecord);
+            outgoing.setCcAddress(ccForRecord.isEmpty() ? null : String.join(", ", ccForRecord));
+            outgoing.setRfcMessageId(rfcMessageId);
+            outgoing.setSubject(replySubjectFinal);
+            outgoing.setBodyText(EmailBodyCleaner.cap(message, storedBodyMaxChars));
+            outgoing.setSnippet(message.length() > 200 ? message.substring(0, 200) : message);
+            outgoing.setMessageDate(LocalDateTime.now());
+            outgoing.getAttachments().addAll(attachmentsToLink);
+            rfiEmailMessageRepository.save(outgoing);
+
+            return saved;
+        }));
     }
 
     private static final int MAX_STARTING_RFI_NUMBER = 99999;

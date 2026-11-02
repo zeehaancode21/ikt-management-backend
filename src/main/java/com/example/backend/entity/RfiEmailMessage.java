@@ -35,11 +35,12 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 @Table(name = "rfi_email_messages", indexes = {
-    @Index(name = "idx_rfi_email_rfi_id", columnList = "rfi_id"),
-    @Index(name = "idx_rfi_email_gmail_msg_id", columnList = "gmail_message_id"),
-    @Index(name = "idx_rfi_email_gmail_thread_id", columnList = "gmail_thread_id"),
-    @Index(name = "idx_rfi_email_direction", columnList = "direction"),
-    @Index(name = "idx_rfi_email_date", columnList = "message_date")
+    // ONE composite index replaces idx_rfi_email_rfi_id + idx_rfi_email_date (it serves
+    // "messages of this RFI ordered by date" and the rfi_id foreign key).
+    // Removed as redundant: idx_rfi_email_gmail_msg_id (the unique constraint on
+    // gmail_message_id is already an index) and idx_rfi_email_direction (2 values, never selective).
+    @Index(name = "idx_rfi_email_rfi_date", columnList = "rfi_id, message_date"),
+    @Index(name = "idx_rfi_email_gmail_thread_id", columnList = "gmail_thread_id")
 })
 public class RfiEmailMessage {
 

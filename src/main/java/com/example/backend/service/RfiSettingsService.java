@@ -13,6 +13,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.List;
@@ -47,11 +49,23 @@ public class RfiSettingsService {
     private  RfiSettingsRepository rfiSettingsRepository;
     @Autowired 
     private  UserRepository userRepository;
-    
-    // Encryption key for storing refresh tokens securely
-    // IMPORTANT: Change this to your own secure key in production!
-    private static final String ENCRYPTION_KEY = "MySecureKeyFor16"; // Must be 16 characters for AES-128
-    private static final String ALGORITHM = "AES";
+
+    // AES-256-GCM, key from the KYC_ENCRYPTION_KEY environment variable (same service the KYC
+    // module already uses). New values are stored as  "v2:" + base64(iv + ciphertext + tag).
+    @Autowired
+    private EncryptionService encryptionService;
+
+    /** Marks a value encrypted with EncryptionService (AES-GCM). Anything without it is LEGACY. */
+    static final String V2_PREFIX = "v2:";
+
+    // LEGACY ONLY: the old hardcoded key (AES/ECB). Kept so values saved before this fix can still
+    // be read once and re-encrypted by RfiSecretMigrationRunner. The key was committed to the
+    // repository, so treat every legacy ciphertext as compromised: after the migration has run,
+    // rotate the Google OAuth client secret + refresh token, then delete this field and the
+    // legacy methods below.
+    @Value("${rfi.legacy-encryption-key:MySecureKeyFor16}")
+    private String legacyKey = "MySecureKeyFor16";
+    private static final String LEGACY_ALGORITHM = "AES";
     
     private static final Pattern EMAIL_PATTERN
             = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
@@ -509,31 +523,92 @@ public class RfiSettingsService {
     
     // ==================== Encryption Methods ====================
     
+    /** New values: AES-256-GCM through EncryptionService, tagged "v2:". */
     private String encryptToken(String token) {
         try {
-            SecretKeySpec key = new SecretKeySpec(ENCRYPTION_KEY.getBytes(), 0, ENCRYPTION_KEY.getBytes().length, ALGORITHM);
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.ENCRYPT_MODE, key);
-            byte[] encryptedBytes = cipher.doFinal(token.getBytes());
-            return Base64.getEncoder().encodeToString(encryptedBytes);
+            return V2_PREFIX + encryptionService.encryptText(token);
         } catch (Exception e) {
             log.error("Encryption failed", e);
-            throw new RuntimeException("Failed to encrypt token: " + e.getMessage());
+            throw new RuntimeException("Failed to encrypt token");
         }
     }
-    
+
+    /** Reads both formats: "v2:..." (GCM) and old values without the prefix (legacy ECB). */
     private String decryptToken(String encryptedToken) {
         try {
-            SecretKeySpec key = new SecretKeySpec(ENCRYPTION_KEY.getBytes(), 0, ENCRYPTION_KEY.getBytes().length, ALGORITHM);
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.DECRYPT_MODE, key);
-            byte[] decodedBytes = Base64.getDecoder().decode(encryptedToken);
-            byte[] decryptedBytes = cipher.doFinal(decodedBytes);
-            return new String(decryptedBytes);
+            if (isV2(encryptedToken)) {
+                return encryptionService.decryptText(encryptedToken.substring(V2_PREFIX.length()));
+            }
+            return decryptLegacy(encryptedToken);
         } catch (Exception e) {
-            log.error("Decryption failed", e);
-            throw new RuntimeException("Failed to decrypt token: " + e.getMessage());
+            // Never put the exception text in the message: it can contain parts of the value.
+            log.error("Decryption failed ({})", e.getClass().getSimpleName());
+            throw new RuntimeException("Failed to decrypt token");
         }
+    }
+
+    static boolean isV2(String value) {
+        return value != null && value.startsWith(V2_PREFIX);
+    }
+
+    private String decryptLegacy(String encryptedToken) throws Exception {
+        byte[] keyBytes = legacyKey.getBytes(StandardCharsets.UTF_8);
+        SecretKeySpec key = new SecretKeySpec(keyBytes, 0, keyBytes.length, LEGACY_ALGORITHM);
+        Cipher cipher = Cipher.getInstance(LEGACY_ALGORITHM);
+        cipher.init(Cipher.DECRYPT_MODE, key);
+        byte[] decrypted = cipher.doFinal(Base64.getDecoder().decode(encryptedToken));
+        return new String(decrypted, StandardCharsets.UTF_8);
+    }
+
+    /** Only for tests / the migration: builds a legacy-format value exactly like the old code did. */
+    String encryptLegacyForTest(String plain) throws Exception {
+        byte[] keyBytes = legacyKey.getBytes(StandardCharsets.UTF_8);
+        SecretKeySpec key = new SecretKeySpec(keyBytes, 0, keyBytes.length, LEGACY_ALGORITHM);
+        Cipher cipher = Cipher.getInstance(LEGACY_ALGORITHM);
+        cipher.init(Cipher.ENCRYPT_MODE, key);
+        return Base64.getEncoder().encodeToString(cipher.doFinal(plain.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * One-time (idempotent) migration: re-encrypts every legacy secret/token with AES-GCM.
+     * Rows already on "v2:" are left alone. A row that cannot be decrypted is skipped and logged
+     * (the user simply has to reconnect Gmail) - it never stops the application from starting.
+     *
+     * @return how many values were re-encrypted
+     */
+    @Transactional
+    public int reencryptLegacySecrets() {
+        int changed = 0;
+        for (RfiSettings s : rfiSettingsRepository.findAll()) {
+            boolean dirty = false;
+            String secret = s.getGmailClientSecret();
+            if (secret != null && !secret.isBlank() && !isV2(secret)) {
+                try {
+                    s.setGmailClientSecret(encryptToken(decryptLegacy(secret)));
+                    dirty = true;
+                    changed++;
+                } catch (Exception e) {
+                    log.warn("RFI settings {}: client secret could not be migrated (reconnect needed)", s.getId());
+                }
+            }
+            String token = s.getGmailRefreshToken();
+            if (token != null && !token.isBlank() && !isV2(token)) {
+                try {
+                    s.setGmailRefreshToken(encryptToken(decryptLegacy(token)));
+                    dirty = true;
+                    changed++;
+                } catch (Exception e) {
+                    log.warn("RFI settings {}: refresh token could not be migrated (reconnect needed)", s.getId());
+                }
+            }
+            if (dirty) {
+                rfiSettingsRepository.save(s);
+            }
+        }
+        if (changed > 0) {
+            log.info("Re-encrypted {} RFI Gmail secret value(s) with AES-GCM", changed);
+        }
+        return changed;
     }
     
     // ==================== Validation & Helper Methods ====================
@@ -596,8 +671,10 @@ public class RfiSettingsService {
             .id(settings.getId())
             .gmailEmail(settings.getGmailEmail())
             .gmailClientId(settings.getGmailClientId())
-            .gmailClientSecret(settings.getGmailClientSecret()) // encrypted; controller scrubs before responding
-            .gmailRefreshToken(settings.getGmailRefreshToken())
+            // SECURITY: never send secrets (not even encrypted) to the browser. The UI only needs
+            // tokenValid to show the connection status.
+            .gmailClientSecret(null)
+            .gmailRefreshToken(null)
             .tokenValid(settings.getTokenValid())
             .tokenExpiryDate(settings.getTokenExpiryDate())
             .toContacts(settings.getAllToContacts().stream()

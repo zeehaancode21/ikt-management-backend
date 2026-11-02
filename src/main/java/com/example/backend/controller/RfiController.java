@@ -6,7 +6,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,12 +27,13 @@ import com.example.backend.entity.RfiStatus;
 import com.example.backend.entity.RfiTeamType;
 import com.example.backend.service.RfiAccessService;
 import com.example.backend.service.RfiGmailSyncService;
+import com.example.backend.service.RfiErrors;
 import com.example.backend.service.RfiService;
 import com.example.backend.service.SubmitDeduplicator;
 
 @RestController
 @RequestMapping("/api/project-status/{projectName}/rfis")
-@CrossOrigin(origins = {"https://ikt-management-frontend.vercel.app", "http://localhost:5173"})
+// CORS is configured once, globally (SecurityConfig#corsConfigurationSource) - no per-controller copy.
 public class RfiController {
 
     @Autowired
@@ -145,7 +145,7 @@ public class RfiController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to send RFI: " + e.getMessage());
+            throw RfiErrors.internal("Failed to send RFI", e);
         }
     }
 
@@ -185,7 +185,7 @@ public class RfiController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to update RFI status: " + e.getMessage());
+            throw RfiErrors.internal("Failed to update RFI status", e);
         }
     }
 
@@ -210,7 +210,7 @@ public class RfiController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to resubmit RFI: " + e.getMessage());
+            throw RfiErrors.internal("Failed to resubmit RFI", e);
         }
     }
 
@@ -240,7 +240,7 @@ public class RfiController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to reply to RFI: " + e.getMessage());
+            throw RfiErrors.internal("Failed to reply to RFI", e);
         }
     }
 
@@ -268,7 +268,7 @@ public class RfiController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to reopen RFI: " + e.getMessage());
+            throw RfiErrors.internal("Failed to reopen RFI", e);
         }
     }
 
@@ -277,6 +277,7 @@ public class RfiController {
      * Manually triggers a Gmail sync for a single RFI.
      * Fetches all messages in the RFI's Gmail thread and imports new replies.
      * Returns the sync result with count of new messages and any errors.
+     * Only people on the RFI (To / CC / sender) may call it - enforced by RfiAccessInterceptor.
      */
     @PostMapping("/{id}/sync")
     public ResponseEntity<ApiResponse<RfiSyncResultDto>> syncRfiGmail(
@@ -292,7 +293,7 @@ public class RfiController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to sync RFI: " + e.getMessage());
+            throw RfiErrors.internal("Failed to sync RFI", e);
         }
     }
 
@@ -305,7 +306,9 @@ public class RfiController {
     public ResponseEntity<ApiResponse<List<RfiSyncResultDto>>> syncAllRfisForProject(
             @PathVariable String projectName) {
         try {
-            List<RfiSyncResultDto> results = rfiGmailSyncService.syncAllForProject(projectName);
+            // Only the RFIs the caller is a participant of are synced (the rest are skipped), and
+            // CLOSED / CANCELLED RFIs are left out - see RfiGmailSyncService#syncAllForProject.
+            List<RfiSyncResultDto> results = rfiGmailSyncService.syncAllForProject(projectName, currentUsername());
             results.forEach(r -> withAccess(r.getUpdatedRfi()));
             int successCount = (int) results.stream().filter(r -> r.getSuccess()).count();
             int failureCount = results.size() - successCount;
@@ -314,7 +317,7 @@ public class RfiController {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to sync project RFIs: " + e.getMessage());
+            throw RfiErrors.internal("Failed to sync project RFIs", e);
         }
     }
 }

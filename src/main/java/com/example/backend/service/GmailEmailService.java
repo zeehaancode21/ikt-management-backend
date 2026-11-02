@@ -14,6 +14,14 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -27,6 +35,7 @@ import com.fasterxml.jackson.core.JsonToken;
 
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
+import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.gson.GsonFactory;
 import com.google.api.services.gmail.Gmail;
 import com.google.api.services.gmail.GmailScopes;
@@ -918,21 +927,94 @@ public class GmailEmailService {
             throw new Exception("Gmail API OAuth client is not configured — add your Client ID "
                     + "and Client Secret in RFI Settings");
         }
+        return clientFor(refreshTokenToUse, clientIdToUse, clientSecretToUse);
+    }
+
+    // ── Shared transport + small per-credential client cache ─────────────────────────────────
+    //
+    // Before: every Gmail operation created TWO new NetHttpTransport objects and called
+    // credential.refreshToken() (a round-trip to Google) - about 3 times per "Sync Gmail" click.
+    // Now: ONE transport for the whole app, and one Gmail client per (token, client id, secret).
+    // GoogleCredential refreshes its own access token when it is missing or about to expire,
+    // so no manual refresh is needed. The cache key is a hash of the credentials, so saving a new
+    // token/secret in RFI Settings automatically selects a fresh client. At most 16 clients are
+    // kept (least recently used is dropped) - a few KB each.
+
+    private static volatile NetHttpTransport sharedTransport;
+
+    private static NetHttpTransport transport() throws Exception {
+        NetHttpTransport t = sharedTransport;
+        if (t == null) {
+            synchronized (GmailEmailService.class) {
+                t = sharedTransport;
+                if (t == null) {
+                    t = GoogleNetHttpTransport.newTrustedTransport();
+                    sharedTransport = t;
+                }
+            }
+        }
+        return t;
+    }
+
+    private static final int MAX_CACHED_CLIENTS = 16;
+
+    private static final Map<String, Gmail> CLIENT_CACHE = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Gmail> eldest) {
+            return size() > MAX_CACHED_CLIENTS;
+        }
+    };
+
+    static String clientCacheKey(String token, String id, String secret) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            md.update(token.getBytes(StandardCharsets.UTF_8));
+            md.update((byte) 0);
+            md.update(id.getBytes(StandardCharsets.UTF_8));
+            md.update((byte) 0);
+            md.update(secret.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(md.digest());
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Returns the cached Gmail client for these credentials, creating it on first use. */
+    static Gmail clientFor(String refreshTokenToUse, String clientIdToUse, String clientSecretToUse) throws Exception {
+        String key = clientCacheKey(refreshTokenToUse, clientIdToUse, clientSecretToUse);
+        synchronized (CLIENT_CACHE) {
+            Gmail cached = CLIENT_CACHE.get(key);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        NetHttpTransport http = transport();
         GoogleCredential credential = new GoogleCredential.Builder()
-                .setTransport(GoogleNetHttpTransport.newTrustedTransport())
+                .setTransport(http)
                 .setJsonFactory(GsonFactory.getDefaultInstance())
                 .setClientSecrets(clientIdToUse, clientSecretToUse)
                 .build()
                 .setRefreshToken(refreshTokenToUse);
-        credential.refreshToken();
-        credential = credential.createScoped(Collections.singleton(GmailScopes.GMAIL_MODIFY));  // ✅ FIXED
-
-        return new Gmail.Builder(
-                GoogleNetHttpTransport.newTrustedTransport(),
-                GsonFactory.getDefaultInstance(),
-                credential)  // ← Now uses properly scoped credential
+        Gmail gmail = new Gmail.Builder(http, GsonFactory.getDefaultInstance(), credential)
                 .setApplicationName("RFI Email Service")
                 .build();
+        synchronized (CLIENT_CACHE) {
+            Gmail raced = CLIENT_CACHE.putIfAbsent(key, gmail);
+            return raced != null ? raced : gmail;
+        }
+    }
+
+    /** For tests / diagnostics. */
+    static int cachedClientCount() {
+        synchronized (CLIENT_CACHE) {
+            return CLIENT_CACHE.size();
+        }
+    }
+
+    static void clearClientCache() {
+        synchronized (CLIENT_CACHE) {
+            CLIENT_CACHE.clear();
+        }
     }
 
     /**
@@ -991,42 +1073,69 @@ public class GmailEmailService {
         return result;
     }
 
+    private static final Pattern CHARSET_IN_CONTENT_TYPE = Pattern.compile("charset=\"?([^\";\\s]+)", Pattern.CASE_INSENSITIVE);
+
     /**
-     * Extracts the text body from a Gmail message (handles both plain text and HTML).
+     * Extracts the text body of a Gmail message for storage.
+     *  - text/plain is preferred; HTML-only mail is converted to plain text (no raw HTML stored)
+     *  - decoded with the part's own charset (UTF-8 if none) - never the server's default charset
+     *  - the quoted history is cut off and the result is capped (see EmailBodyCleaner)
      */
-    private String extractMessageBody(MessagePart part) {
+    String extractMessageBody(MessagePart part) {
         if (part == null) {
             return "";
         }
+        String plain = findBodyOfType(part, "text/plain");
+        if (plain != null && !plain.isBlank()) {
+            return EmailBodyCleaner.cleanPlain(plain, EmailBodyCleaner.DEFAULT_MAX_CHARS);
+        }
+        String html = findBodyOfType(part, "text/html");
+        if (html != null && !html.isBlank()) {
+            return EmailBodyCleaner.cleanHtml(html, EmailBodyCleaner.DEFAULT_MAX_CHARS);
+        }
+        return "";
+    }
 
-        String mimeType = part.getMimeType();
-        String body = "";
-
-        if ("text/plain".equals(mimeType)) {
+    /** First non-empty body of the given MIME type (depth first). Attached text files are not bodies. */
+    private String findBodyOfType(MessagePart part, String mimeType) {
+        if (part == null) {
+            return null;
+        }
+        boolean isAttachment = part.getFilename() != null && !part.getFilename().isEmpty();
+        if (!isAttachment && mimeType.equalsIgnoreCase(part.getMimeType())) {
             MessagePartBody partBody = part.getBody();
             if (partBody != null && partBody.getData() != null) {
-                body = new String(Base64.getUrlDecoder().decode(partBody.getData()));
-            }
-        } else if ("text/html".equals(mimeType)) {
-            // Prefer HTML if plain text isn't available
-            MessagePartBody partBody = part.getBody();
-            if (partBody != null && partBody.getData() != null) {
-                body = new String(Base64.getUrlDecoder().decode(partBody.getData()));
+                byte[] bytes = Base64.getUrlDecoder().decode(partBody.getData());
+                return new String(bytes, charsetOf(part));
             }
         }
-
-        // Check multipart
         if (part.getParts() != null) {
-            for (MessagePart subPart : part.getParts()) {
-                String subBody = extractMessageBody(subPart);
-                if (!subBody.isEmpty()) {
-                    body = subBody;
-                    break;
+            for (MessagePart sub : part.getParts()) {
+                String found = findBodyOfType(sub, mimeType);
+                if (found != null && !found.isBlank()) {
+                    return found;
                 }
             }
         }
+        return null;
+    }
 
-        return body;
+    static Charset charsetOf(MessagePart part) {
+        if (part.getHeaders() != null) {
+            for (MessagePartHeader h : part.getHeaders()) {
+                if ("Content-Type".equalsIgnoreCase(h.getName()) && h.getValue() != null) {
+                    Matcher m = CHARSET_IN_CONTENT_TYPE.matcher(h.getValue());
+                    if (m.find()) {
+                        try {
+                            return Charset.forName(m.group(1).trim());
+                        } catch (Exception ignored) {
+                            // unknown charset name -> UTF-8
+                        }
+                    }
+                }
+            }
+        }
+        return StandardCharsets.UTF_8;
     }
 
     private List<GmailFetchedAttachment> extractAttachments(MessagePart part) {

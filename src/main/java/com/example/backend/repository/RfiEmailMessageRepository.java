@@ -1,5 +1,6 @@
 package com.example.backend.repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,6 +29,13 @@ public interface RfiEmailMessageRepository extends JpaRepository<RfiEmailMessage
      * Used to prevent duplicate imports from multiple syncs.
      */
     boolean existsByGmailMessageId(String gmailMessageId);
+
+    /**
+     * Of the given Gmail message ids, the ones that are already stored. ONE query for a whole
+     * thread instead of one existsBy... query per message.
+     */
+    @Query("select m.gmailMessageId from RfiEmailMessage m where m.gmailMessageId in :ids")
+    List<String> findExistingGmailMessageIds(@Param("ids") Collection<String> ids);
 
     /**
      * True when this RFI already has an email with that RFC Message-ID header.
