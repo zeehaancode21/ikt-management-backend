@@ -408,7 +408,8 @@ public class PublicRfiShareService {
                             "This RFI is no longer available."));
             // Re-checked on every load: if someone flips an RFI to INTERNAL later,
             // the link stops showing it.
-            if (row.getTeamType() != RfiTeamType.EXTERNAL) {
+            if (row.getTeamType() != RfiTeamType.EXTERNAL
+                    || row.getStatus() == com.example.backend.entity.RfiStatus.DRAFTING) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "This RFI is no longer available.");
             }
             projectName = row.getProjectName();

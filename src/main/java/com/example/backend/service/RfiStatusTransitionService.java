@@ -73,6 +73,13 @@ public class RfiStatusTransitionService {
     public Rfi transition(Rfi rfi, RfiStatus newStatus, String changedBy,
                           RfiParticipantRole actorRole, RfiActionSource source,
                           String note, boolean recordIfUnchanged) {
+        return transition(rfi, newStatus, changedBy, actorRole, source, note, recordIfUnchanged, null);
+    }
+
+    /** Same, with {@code notifyDetail} (e.g. the Checker's feedback) added to the notification text. */
+    public Rfi transition(Rfi rfi, RfiStatus newStatus, String changedBy,
+                          RfiParticipantRole actorRole, RfiActionSource source,
+                          String note, boolean recordIfUnchanged, String notifyDetail) {
 
         RfiStatus oldStatus = rfi.getStatus();
         if (oldStatus == newStatus && !recordIfUnchanged) {
@@ -100,7 +107,8 @@ public class RfiStatusTransitionService {
         final String who = (actorRole != null ? actorRole.name() + " participant " : "") + changedBy;
         final String title = "RFI " + saved.getRfiNumber() + " \u2192 " + newStatus;
         final String content = "RFI " + saved.getRfiNumber() + " (" + saved.getProjectName()
-                + ") status changed from " + oldStatus + " to " + newStatus + " by " + who + ".";
+                + ") status changed from " + oldStatus + " to " + newStatus + " by " + who + "."
+                + (notifyDetail != null && !notifyDetail.isBlank() ? " " + notifyDetail.trim() : "");
         final List<String> participants = rfiAccessService.participantEmails(saved);
 
         // The sender of the RFI is often NOT on To/CC (the recipient is usually an outside

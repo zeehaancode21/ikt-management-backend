@@ -167,7 +167,7 @@ public class GmailEmailService {
 
         MimeMessage mimeMessage = new MimeMessage(Session.getDefaultInstance(new Properties()));
         mimeMessage.setFrom(new InternetAddress(fromToUse, fromNameToUse));
-        mimeMessage.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(toEmail));
+        mimeMessage.addRecipients(jakarta.mail.Message.RecipientType.TO, InternetAddress.parse(toEmail));
         mimeMessage.setSubject(subject, "UTF-8");
         if (replyToEmail != null && !replyToEmail.isBlank()) {
             mimeMessage.setReplyTo(new InternetAddress[]{new InternetAddress(replyToEmail)});
@@ -296,7 +296,7 @@ public class GmailEmailService {
         // ── 2. Build the MIME message ──────────────────────────────────────────
         MimeMessage mimeMessage = new MimeMessage(Session.getDefaultInstance(new Properties()));
         mimeMessage.setFrom(new InternetAddress(fromToUse, fromNameToUse));
-        mimeMessage.addRecipient(jakarta.mail.Message.RecipientType.TO, new InternetAddress(toEmail));
+        mimeMessage.addRecipients(jakarta.mail.Message.RecipientType.TO, InternetAddress.parse(toEmail));
         mimeMessage.setSubject(finalSubject, "UTF-8");
         if (replyToEmail != null && !replyToEmail.isBlank()) {
             mimeMessage.setReplyTo(new InternetAddress[]{new InternetAddress(replyToEmail)});

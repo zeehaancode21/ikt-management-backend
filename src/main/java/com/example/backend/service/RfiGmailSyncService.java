@@ -70,10 +70,12 @@ public class RfiGmailSyncService {
 
     // A reply never moves a CLOSED or CANCELLED RFI on its own — the user
     // has to Reopen it first. See the "RFI STATUS CONTROL" requirement.
-    private static final Set<RfiStatus> AUTO_TRANSITION_BLOCKED = EnumSet.of(RfiStatus.CLOSED, RfiStatus.CANCELLED);
+    private static final Set<RfiStatus> AUTO_TRANSITION_BLOCKED = EnumSet.of(RfiStatus.CLOSED, RfiStatus.CANCELLED,
+            RfiStatus.INTERNAL_APPROVED, RfiStatus.DRAFTING);
 
     /** "Sync all" does not touch these (nothing can change for them). */
-    private static final Set<RfiStatus> SYNC_ALL_SKIPPED = EnumSet.of(RfiStatus.CLOSED, RfiStatus.CANCELLED);
+    private static final Set<RfiStatus> SYNC_ALL_SKIPPED = EnumSet.of(RfiStatus.CLOSED, RfiStatus.CANCELLED,
+            RfiStatus.INTERNAL_APPROVED, RfiStatus.DRAFTING);
 
     @Autowired
     private RfiRepository rfiRepository;

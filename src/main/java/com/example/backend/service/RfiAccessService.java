@@ -189,7 +189,30 @@ public class RfiAccessService {
         rfi.setParticipantRole(role);
         rfi.setCanModify(role.canModify());
         rfi.setReceivedByViewer(isRecipientNotSender(rfi, username, email));
+        rfi.setInternalRole(internalRoleOf(rfi, username));
         return rfi;
+    }
+
+    /**
+     * The user's part in the internal workflow on this RFI, or null.
+     *   draft (DRAFT_OWNER / DISPATCHED) -> OWNER is the person it is assigned to
+     *   internal RFI                     -> CHECKER, DRAFTER (the creator)
+     */
+    public String internalRoleOf(Rfi rfi, String username) {
+        if (rfi == null || username == null || rfi.getInternalStage() == null) {
+            return null;
+        }
+        String me = username.trim();
+        if (rfi.getSourceRfiId() != null) {
+            return me.equalsIgnoreCase(String.valueOf(rfi.getOwnerUsername()).trim()) ? "OWNER" : null;
+        }
+        if (rfi.getCheckerUsername() != null && me.equalsIgnoreCase(rfi.getCheckerUsername().trim())) {
+            return "CHECKER";
+        }
+        if (rfi.getSentBy() != null && me.equalsIgnoreCase(rfi.getSentBy().trim())) {
+            return "DRAFTER";
+        }
+        return null;
     }
 
     /**

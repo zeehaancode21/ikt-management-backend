@@ -42,7 +42,8 @@ import lombok.extern.slf4j.Slf4j;
 public class RfiReplyAutoCheckService {
 
     /** Same idea as the manual sync: closed/cancelled/draft RFIs are never moved by an email. */
-    private static final Set<RfiStatus> NOT_WATCHED = EnumSet.of(RfiStatus.DRAFT, RfiStatus.CLOSED, RfiStatus.CANCELLED);
+    private static final Set<RfiStatus> NOT_WATCHED = EnumSet.of(RfiStatus.DRAFT, RfiStatus.CLOSED, RfiStatus.CANCELLED,
+            RfiStatus.INTERNAL_APPROVED, RfiStatus.DRAFTING);
 
     private static final long MIN_GAP_MS = 30_000L;           // at most one real check / user / 30 s
     private static final long FIRST_LOOKBACK_S = 7L * 86_400; // first check after a restart looks back 7 days

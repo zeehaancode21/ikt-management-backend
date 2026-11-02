@@ -73,6 +73,10 @@ public class WebConfig implements WebMvcConfigurer {
                         "/api/project-status/*/rfis/*/reply",
                         "/api/project-status/*/rfis/*/resubmit",
                         "/api/project-status/*/rfis/*/reopen",
+                        // Internal workflow (Checker / Drafter / Owner); the service checks the exact role.
+                        "/api/project-status/*/rfis/*/internal/*",
+                        "/api/project-status/*/rfis/*/draft",
+                        "/api/project-status/*/rfis/*/dispatch",
                         // Sync talks to the Gmail mailbox of the RFI's sender, so only people on
                         // the RFI (To / CC / sender) may trigger it. (/sync-all has no RFI id:
                         // RfiGmailSyncService#syncAllForProject skips every RFI the caller

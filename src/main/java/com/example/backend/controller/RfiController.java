@@ -129,16 +129,17 @@ public class RfiController {
             @RequestParam(value = "senderName", required = false) String senderName,
             @RequestParam("recipientEmail") String recipientEmail,
             @RequestParam(value = "ccEmails", required = false) String ccEmails,
-            @RequestParam(value = "startingNumber", required = false) Integer startingNumber) {
+            @RequestParam(value = "startingNumber", required = false) Integer startingNumber,
+            @RequestParam(value = "ownerUsername", required = false) String ownerUsername) {
         try {
             final String user = currentUsername();
             String dedupeKey = SubmitDeduplicator.key("create", user, projectName, discipline, teamType,
-                priority, subject, emailBody, senderEmail, recipientEmail, ccEmails, startingNumber,
+                priority, subject, emailBody, senderEmail, recipientEmail, ccEmails, startingNumber, ownerUsername,
                 SubmitDeduplicator.fileFingerprint(attachment));
             Rfi created = submitDeduplicator.runOnce(dedupeKey, () -> rfiService.createAndSendRfi(
                 projectName, discipline, teamType, RfiPriority.parseOrDefault(priority),
                 subject, emailBody, attachment,
-                senderEmail, senderName, recipientEmail, ccEmails, user, startingNumber
+                senderEmail, senderName, recipientEmail, ccEmails, user, startingNumber, ownerUsername
             ));
             return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success("RFI " + created.getRfiNumber() + " sent successfully", created));
@@ -269,6 +270,98 @@ public class RfiController {
             throw e;
         } catch (Exception e) {
             throw RfiErrors.internal("Failed to reopen RFI", e);
+        }
+    }
+
+    // ═══ Internal workflow: Drafter -> Checker -> Owner -> Client ═══
+    // All of these sit behind RfiAccessInterceptor (see WebConfig); the service then checks the
+    // exact role (Checker / Drafter / Owner), so being "on the RFI" alone is not enough.
+
+    // ── POST .../rfis/{id}/internal/request-revision?status=UNDER_REVIEW&note=... ──
+    /** Checker sends the RFI back to the Drafter with feedback. */
+    @PostMapping("/{id}/internal/request-revision")
+    public ResponseEntity<ApiResponse<Rfi>> requestInternalRevision(
+            @PathVariable String projectName,
+            @PathVariable Long id,
+            @RequestParam("status") RfiStatus status,
+            @RequestParam("note") String note) {
+        Rfi updated = withAccess(rfiService.requestInternalRevision(id, status, note, currentUsername()));
+        return ResponseEntity.ok(ApiResponse.success(
+            "RFI " + updated.getRfiNumber() + " sent back to the Drafter", updated));
+    }
+
+    // ── POST .../rfis/{id}/internal/resubmit ──
+    /** Drafter sends the revised RFI to the Checker again; status goes back to OPEN. */
+    @PostMapping(value = "/{id}/internal/resubmit", consumes = "multipart/form-data")
+    public ResponseEntity<ApiResponse<Rfi>> resubmitInternalRfi(
+            @PathVariable String projectName,
+            @PathVariable Long id,
+            @RequestParam("message") String message,
+            @RequestParam(value = "attachments", required = false) List<MultipartFile> attachments) {
+        try {
+            final String user = currentUsername();
+            Rfi updated = submitDeduplicator.runOnce(
+                SubmitDeduplicator.key("internal-resubmit", user, id, message, SubmitDeduplicator.filesFingerprint(attachments)),
+                () -> withAccess(rfiService.resubmitInternalRfi(id, message, attachments, user)));
+            return ResponseEntity.ok(ApiResponse.success(
+                "RFI " + updated.getRfiNumber() + " resubmitted to the Checker", updated));
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            throw RfiErrors.internal("Failed to resubmit RFI", e);
+        }
+    }
+
+    // ── POST .../rfis/{id}/internal/approve ──
+    /** Checker approves; the external draft for the Owner is created. Returns the approved internal RFI. */
+    @PostMapping("/{id}/internal/approve")
+    public ResponseEntity<ApiResponse<Rfi>> approveInternalRfi(
+            @PathVariable String projectName,
+            @PathVariable Long id,
+            @RequestParam(value = "note", required = false) String note) {
+        Rfi approved = withAccess(rfiService.approveInternalRfi(id, note, currentUsername()));
+        return ResponseEntity.ok(ApiResponse.success(
+            "RFI " + approved.getRfiNumber() + " approved. A draft was created for the Owner.", approved));
+    }
+
+    // ── PUT .../rfis/{id}/draft (multipart) ──
+    /** Owner edits the generated external draft (subject, email body, replacement PDF). */
+    @PutMapping(value = "/{id}/draft", consumes = "multipart/form-data")
+    public ResponseEntity<ApiResponse<Rfi>> updateDraft(
+            @PathVariable String projectName,
+            @PathVariable Long id,
+            @RequestParam(value = "subject", required = false) String subject,
+            @RequestParam(value = "emailBody", required = false) String emailBody,
+            @RequestParam(value = "attachment", required = false) MultipartFile attachment) {
+        try {
+            Rfi updated = withAccess(rfiService.updateDraft(id, subject, emailBody, attachment, currentUsername()));
+            return ResponseEntity.ok(ApiResponse.success("Draft " + updated.getRfiNumber() + " saved", updated));
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            throw RfiErrors.internal("Failed to save the draft", e);
+        }
+    }
+
+    // ── POST .../rfis/{id}/dispatch?to=...&cc=... ──
+    /** Owner sends the draft to the client. It becomes a live EXTERNAL RFI with status OPEN. */
+    @PostMapping("/{id}/dispatch")
+    public ResponseEntity<ApiResponse<Rfi>> dispatchDraft(
+            @PathVariable String projectName,
+            @PathVariable Long id,
+            @RequestParam("to") String to,
+            @RequestParam(value = "cc", required = false) String cc) {
+        try {
+            final String user = currentUsername();
+            Rfi sent = submitDeduplicator.runOnce(
+                SubmitDeduplicator.key("dispatch", user, id, to, cc),
+                () -> withAccess(rfiService.dispatchDraft(id, to, cc, user)));
+            return ResponseEntity.ok(ApiResponse.success(
+                "RFI " + sent.getRfiNumber() + " sent to the client", sent));
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            throw RfiErrors.internal("Failed to send the RFI to the client", e);
         }
     }
 

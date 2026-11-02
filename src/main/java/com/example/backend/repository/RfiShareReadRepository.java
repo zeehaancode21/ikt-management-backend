@@ -48,6 +48,7 @@ public interface RfiShareReadRepository extends Repository<Rfi, Long> {
             + "r.status AS status, r.teamType AS teamType, r.createdAt AS createdAt, "
             + "r.responseReceivedAt AS responseReceivedAt "
             + "FROM Rfi r WHERE r.projectName = :projectName AND r.teamType = :teamType "
+            + "AND r.status <> com.example.backend.entity.RfiStatus.DRAFTING "
             + "ORDER BY r.id DESC")
     List<RfiRow> findByProject(@Param("projectName") String projectName,
                                @Param("teamType") RfiTeamType teamType,

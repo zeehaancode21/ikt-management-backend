@@ -41,6 +41,8 @@ public interface RfiService {
      *                   that's actually used is recorded onto the RFI
      *                   Settings "known CC addresses" list once the send
      *                   succeeds — see RfiSettingsService#recordContactUsage.
+     * @param ownerUsername INTERNAL RFIs only: the Owner who will dispatch the approved RFI to the
+     *                   client. Null = the first user with the OWNER role. Ignored for EXTERNAL RFIs.
      * @param priority   optional. Null falls back to {@link RfiPriority#DEFAULT} (MEDIUM).
      * @param startingNumber optional. Only honoured when the project has NO RFIs yet:
      *                   the first RFI is numbered with this value instead of 1
@@ -59,7 +61,8 @@ public interface RfiService {
         String recipientEmail,
         String ccEmails,
         String sentBy,
-        Integer startingNumber
+        Integer startingNumber,
+        String ownerUsername
     ) throws Exception;
 
     /**
@@ -114,4 +117,32 @@ public interface RfiService {
      */
     Rfi replyToRfi(Long rfiId, String message, List<MultipartFile> attachments,
                    boolean explicitResubmit, String performedBy) throws Exception;
+
+    // ── Internal workflow: Drafter -> Checker -> Owner -> Client ──────────────
+
+    /**
+     * Checker sends an INTERNAL RFI back to the Drafter with feedback.
+     * @param status UNDER_REVIEW or OUTSTANDING
+     */
+    Rfi requestInternalRevision(Long rfiId, RfiStatus status, String note, String performedBy);
+
+    /**
+     * Drafter sends the revised RFI to the Checker again (same Gmail thread). Status goes back to OPEN.
+     */
+    Rfi resubmitInternalRfi(Long rfiId, String message, List<MultipartFile> attachments, String performedBy) throws Exception;
+
+    /**
+     * Checker approves an INTERNAL RFI: it becomes INTERNAL_APPROVED and an EXTERNAL draft
+     * (status DRAFTING) is created for the Owner. Returns the approved internal RFI.
+     */
+    Rfi approveInternalRfi(Long rfiId, String note, String performedBy);
+
+    /** Owner edits the generated draft before sending. A null field is left unchanged. */
+    Rfi updateDraft(Long draftId, String subject, String emailBody, MultipartFile attachment, String performedBy) throws Exception;
+
+    /**
+     * Owner sends the draft to the client ("Send External RFI"). The draft becomes a live
+     * EXTERNAL RFI with status OPEN. toEmails is required; ccEmails is optional.
+     */
+    Rfi dispatchDraft(Long draftId, String toEmails, String ccEmails, String performedBy) throws Exception;
 }

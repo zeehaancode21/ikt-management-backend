@@ -141,6 +141,30 @@ public class Rfi {
     @Column(name = "response_notes", columnDefinition = "TEXT")
     private String responseNotes;
 
+    // ── Internal workflow (Drafter -> Checker -> Owner -> Client) ─────────
+    // All nullable: plain external RFIs and RFIs created before this workflow have none of it.
+    // The Drafter is the existing sentBy; people are stored as usernames, like sentBy.
+
+    /** The colleague an INTERNAL RFI is sent to for review (resolved from the To address). */
+    @Column(name = "checker_username")
+    private String checkerUsername;
+
+    /** The Owner (project lead) who turns the approved RFI into an external one and dispatches it. */
+    @Column(name = "owner_username")
+    private String ownerUsername;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "internal_stage", length = 32)
+    private RfiInternalStage internalStage;
+
+    /** On the generated external draft: id of the approved internal RFI it came from. */
+    @Column(name = "source_rfi_id")
+    private Long sourceRfiId;
+
+    /** On the approved internal RFI: id of the external draft / RFI generated from it. */
+    @Column(name = "forwarded_rfi_id")
+    private Long forwardedRfiId;
+
     // ── Per-viewer access info (NOT stored in the database) ──────────────
     // Filled in by RfiAccessService for whoever is looking at the RFI right
     // now, so the app knows whether to show the action buttons.
@@ -157,6 +181,11 @@ public class Rfi {
     // Not stored in the database.
     @Transient
     private boolean receivedByViewer;
+
+    // The viewer's part in the internal workflow on THIS RFI: DRAFTER, CHECKER, OWNER or null.
+    // The app uses it to decide which workflow buttons to show. Not stored in the database.
+    @Transient
+    private String internalRole;
 
     // Safety net: a null here (e.g. built via the all-args constructor) must never
     // reach the NOT NULL column.
